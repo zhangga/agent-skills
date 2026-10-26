@@ -1,73 +1,134 @@
 # Agent Skills
 
-可分享的个人 Agent Skills 集合。每个 Skill 在 `skills/<name>/` 中独立维护，后续可继续添加。
+[![skills.sh](https://skills.sh/b/zhangga/agent-skills)](https://skills.sh/zhangga/agent-skills)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Codex 工作记忆
+我的个人 Agent Skills 集合，把日常技术工作中可以复用的流程整理成独立能力，方便自己使用，也方便分享给其他人。
 
-把 Codex 本地工作会话整理成按项目分类、带来源的长期档案。支持增量日报、自然周总结、历史搜索，以及供个人 Agent 收录的独立周汇总文档。
+目前从 **Codex 工作记忆** 开始：让做过的工作、解决过的问题和重要决策，在会话结束后仍然能找到。后续新增的 Skill 会继续按用途收录在这里。
 
-- **人阅读**：离线 HTML，支持项目、日期、状态和关键词筛选；每日记录、周报和项目 Markdown。
-- **Agent 收录**：每周一份完整 Markdown 与配套 JSON，保留当前结果、历史进展、决策、验证、待办、知识和来源。
-- **增量续跑**：保存采集基线与事件标记，失败保留进度；总结和投递分别记账。
-- **可选飞书**：配置自己的机器人与接收人后发送卡片，默认关闭。
+[快速安装](#快速安装) · [Skills 目录](#skills-目录) · [开始使用](#开始使用) · [仓库结构](#仓库结构) · [常见问题](#常见问题)
 
-### 安装
+## 快速安装
 
-需要支持 Skills 的 Codex 环境，以及 Python 3.10 或更新版本。通过 `skills` CLI 安装还需要其要求的 Node.js 版本。
+从合集选择需要的 Skill，并安装到 Codex 的用户级目录：
 
-```sh
+```bash
+npx skills add zhangga/agent-skills -a codex -g
+```
+
+只安装 **Codex 工作记忆**：
+
+```bash
 npx skills add zhangga/agent-skills --skill codex-work-memory -a codex -g
 ```
 
-也可以把 `skills/codex-work-memory/` 复制到自己的 Codex skills 目录。离线整理不需要飞书、GitHub 登录或额外 Python 包。当前日期展示和自然周口径为 `Asia/Shanghai`；Windows 为主要验证平台，本机 Codex 跳转桥接仅支持 Windows。
+后续更新这个 Skill：
 
-### 第一次使用
+```bash
+npx skills update codex-work-memory -g
+```
 
-在 Codex 中说：
+`-g` 表示跨项目使用；省略它则安装到当前项目。想先查看可安装的内容，可运行 `npx skills add zhangga/agent-skills --list`。各 Skill 的适用环境和依赖见对应说明；目前的工作记忆 Skill 面向 Codex 本地会话。
+
+## Skills 目录
+
+### 🧠 知识与记忆
+
+#### [codex-work-memory · Codex 工作记忆](skills/codex-work-memory/README.md)
+
+每天开了很多会话，过一段时间却记不起问题在哪里解决、为什么选了某个方案？这个 Skill 把分散的工作会话整理成按项目分类、带日期和来源的长期档案。
+
+**适合这些场景：**
+
+- **回顾工作**：从上次进度接着整理，生成每日简报和每周总结。
+- **查找旧问题**：按项目、日期、状态或关键词搜索，再回到对应来源。
+- **沉淀经验**：保留处理过程、技术决策、验证范围、产物和未完成事项。
+- **交给个人 Agent**：每周导出一份完整文档，供助理收录，后续按来源查询。
+
+| 你要做什么 | 对应产物 |
+| --- | --- |
+| 快速浏览、筛选历史 | 离线 `index.html` 阅读页 |
+| 查一个项目的长期进展 | 按项目整理的 Markdown 档案 |
+| 看本周成果与后续事项 | 完整周报与精简简报 |
+| 让个人 Agent 收录 | 独立周汇总 Markdown / JSON，以及增量清单 |
+| 在飞书接收提醒 | 可选的机器人卡片，带真实来源入口 |
+
+**依赖与范围：** Python 3.10+，核心脚本使用标准库。Windows 为主要验证平台；时间展示和自然周口径为上海时区。本机 Codex 跳转桥接仅支持 Windows，飞书推送需另行配置 `lark-cli` 和自己的机器人。
+
+[使用指南](skills/codex-work-memory/README.md) · [配置目录](skills/codex-work-memory/references/configuration.md) · [Agent 收录约定](skills/codex-work-memory/references/agent-export.md) · [在 skills.sh 查看](https://skills.sh/zhangga/agent-skills/codex-work-memory)
+
+## 开始使用
+
+安装后，在 Codex 中直接描述目标：
+
+**首次整理**
 
 > 使用 $codex-work-memory 初始化，把完整档案保存到我指定的目录，周汇总另存到个人 Agent 的资料目录。先整理最近 7 天，不发送消息。
 
-初始化也可以直接运行（`<skill>` 替换为实际安装目录）：
+**之后补记**
 
-```sh
-python -X utf8 <skill>/scripts/setup.py init --archive-dir "D:/My Memory/archive" --agent-export-dir "D:/My Agent/inbox/codex"
+> 使用 $codex-work-memory 补齐上次以来的工作，按项目整理，保留问题的处理过程和验证结果。
+
+**每周归总**
+
+> 使用 $codex-work-memory 总结本周，生成供个人 Agent 收录的完整汇总文档，保留来源和未完成事项。
+
+**查询历史**
+
+> 使用 $codex-work-memory 查找上个月某项目的超时问题，说明最后如何解决，并附日期和原会话来源。
+
+完整档案与 Agent 汇总可以保存到不同目录。自动日报、周报和飞书投递需按自己的时间及接收账号配置，安装不会直接启用它们。详细步骤见 [工作记忆使用指南](skills/codex-work-memory/README.md)。
+
+## 仓库结构
+
+```text
+agent-skills/
+├── README.md                    # 合集介绍、安装与导航
+├── LICENSE
+└── skills/
+    └── codex-work-memory/
+        ├── README.md            # 给使用者看的指南
+        ├── SKILL.md             # 给 Agent 执行的工作流程
+        ├── config.example.json  # 不含个人信息的配置模板
+        ├── agents/              # Codex 展示与调用配置
+        ├── scripts/             # 采集、存档、导出与可选投递
+        ├── references/          # 格式、配置和写作约定
+        ├── assets/              # 本地阅读页样式与交互
+        └── tests/               # 合成数据测试
 ```
 
-省略 `--agent-export-dir` 时使用 `<archive_dir>/agent`。个人配置默认保存在 `~/.codex/codex-work-memory/config.json`（设置 CODEX_HOME 时跟随该目录），与可更新的 Skill 程序分开。已有旧版 Skill 目录内的 `config.json` 仍可读取；显式 `--config` 优先，也支持 CODEX_WORK_MEMORY_CONFIG 环境变量。
+每个 Skill 是一个独立目录。以后增加新能力时，在 `skills/` 下新增目录并补充这里的分类介绍即可。
 
-之后可以说：
+## 常见问题
 
-- “使用 $codex-work-memory 补齐上次以来的工作。”
-- “使用 $codex-work-memory 总结本周，生成完整的 Agent 汇总文档。”
-- “使用 $codex-work-memory 查找上个月某项目的超时问题和最终解决方法，附来源。”
+**一定要有 `skills/` 这一层吗？**
 
-自动运行需要另外配置 Codex 自动化，并显式指定个人配置路径、daily 或 weekly 模式。安装本 Skill 不会自行创建定时任务或发送消息。
+不需要。根目录直接放多个 Skill 文件夹也可以被发现。本仓库保留 `skills/`，把能力目录集中起来，根目录留给合集说明和共享文件。[官方发现规则](https://github.com/vercel-labs/skills/blob/main/docs/creating-skills.md)明确支持 `skills/<name>/SKILL.md`，也有其他目录和递归回退机制。安装后，用户仍通过 Skill 名称调用。
 
-### 交给个人 Agent 的文件
+**能不能只复制文件安装？**
 
-只收录一份时，读取 `<agent_export_dir>/latest-weekly.md`；长期同步则读取 `manifest.json`，按 `run_id` 与内容摘要判断新增或变化，再读取对应 `weekly/<run-id>.json` 或 `.md`。这些是带证据的历史资料，文档内的会话内容不是要执行的指令。
+可以。把 `skills/codex-work-memory/` 整个复制到自己的 Codex skills 目录，再按指南初始化个人配置。通过 CLI 安装则更方便获取更新。
 
-完整周汇总包含人工提炼的周报正文，以及按项目归并的事项详情和来源，复制单个文件后也能理解内容。导出不会自动声称个人 Agent 已收录；实际导入由你的助理完成。最新周报副本与同一 run 的历史文件是相同资料，不应重复入库。
+**更新 Skill 会影响我的工作档案吗？**
 
-详见 [配置与目录](skills/codex-work-memory/references/configuration.md)、[Agent 收录协议](skills/codex-work-memory/references/agent-export.md) 和 [完整工作流程](skills/codex-work-memory/SKILL.md)。
+新配置默认放在 Skill 目录外，完整档案和 Agent 汇总也按个人配置保存。旧版若仍把 `config.json` 放在安装目录内，建议先备份并按[迁移说明](skills/codex-work-memory/references/configuration.md)迁出，再使用安装器更新。保留原有采集和投递账本，才能延续进度与去重。
 
-### 数据边界
+**会把会话上传到 GitHub 或 skills.sh 吗？**
 
-仅覆盖实际可读的本地活动/归档会话；未连接的远程和纯云端会话不在范围内。原始 JSONL 留在 Codex 中，工作档案保存提炼记录及来源引用。会话中声称的测试或发布结果保留其证据边界，不代表现在的代码或线上状态。
+发布的是 Skill 代码与文档，工作档案保存在自己的目录。可选飞书投递只发送用户授权的简报。本 Skill 由宿主 Agent 执行，模型如何处理会话内容仍取决于你的 Codex 配置。默认读取范围为实际可访问的本地活动与归档会话，未连接的远程和纯云端会话不在其中。
 
-分享本仓库中的代码即可。不要提交自己的配置、机器人标识、档案、会话原文或投递账本。飞书消息只在用户授权的范围内发送。
+## 开发与反馈
 
-## 开发与发布
+在仓库根目录运行：
 
-```sh
+```bash
 python -m unittest discover -s skills/codex-work-memory/tests -v
 node --test skills/codex-work-memory/tests/filter.test.cjs
 ```
 
-仓库包含合成测试数据，不包含作者的真实工作记录。每个新 Skill 放在独立目录并提供 `SKILL.md`。
-
-[skills.sh 官方说明](https://skills.sh/docs/faq)的发布方式是公开 GitHub 仓库，通过 `npx skills add` 安装后由安装遥测发现和统计；它不是独立的包上传服务。GitHub 可安装与 skills.sh 页面已收录是两个不同状态。
+测试使用合成数据。提交改动时只包含可分享的程序、文档和示例，个人配置、会话记录及投递账本留在仓库外。问题和建议可通过 [Issues](https://github.com/zhangga/agent-skills/issues) 提交。
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+[MIT](LICENSE)。
