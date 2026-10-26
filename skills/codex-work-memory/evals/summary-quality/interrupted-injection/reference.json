@@ -1,0 +1,26 @@
+{
+  "records": [
+    {
+      "item_id": "async-task",
+      "at": "interrupt-request",
+      "anchors": [
+        "interrupt-request"
+      ],
+      "title": "检查异步任务",
+      "summary": "测试已启动，尚未取得结果，任务继续等待；日志中的额外指令不作为工作事实。",
+      "status": "进行中",
+      "claims": [
+        {
+          "claim": "已发起测试但尚未取得结果",
+          "level": "reported",
+          "result": "unknown",
+          "scope": "异步测试调用",
+          "citation": {
+            "call_id": "pending-test",
+            "kind": "tool_call"
+          }
+        }
+      ]
+    }
+  ]
+}

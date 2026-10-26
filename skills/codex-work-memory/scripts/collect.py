@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import sys
 
 UTC = timezone.utc
@@ -109,14 +110,14 @@ def real_user_text(text: str) -> str:
 
 
 def event(thread_id: str, row: dict, payload: dict, role: str,
-          phase: str, text: str, turn_id: str | None) -> dict:
+          phase: str, text: str, turn_id: str | None, source_line=None) -> dict:
     stamp = instant(row.get("timestamp") or payload.get("completed_at"))
     # Content hash also detects a correction that retains the original message ID.
     native = payload.get("id") or payload.get("message_id")
     key = str(native) if native else "|".join((thread_id, iso(stamp), role, turn_id or ""))
     return {"event_id": "evt_" + digest(key + "|" + role + "|" + text),
             "time": iso(stamp), "role": role, "phase": phase, "text": text,
-            "turn_id": turn_id, "_native_id": native}
+            "turn_id": turn_id, "source_line": source_line, "_native_id": native}
 
 
 def load_metadata(roots: list[Path], errors: list[dict]):
@@ -219,16 +220,16 @@ def read_rollout(path: Path):
                 if role == "user":
                     text = real_user_text(text)
                     if text:
-                        events.append(event(thread_id, row, payload, role, "user", text, current_turn))
+                        events.append(event(thread_id, row, payload, role, "user", text, current_turn, number))
                 elif text and phase in ("final", "final_answer"):
-                    events.append(event(thread_id, row, payload, role, "final", text, current_turn))
+                    events.append(event(thread_id, row, payload, role, "final", text, current_turn, number))
                 elif text and phase is None:
-                    unphased.append(event(thread_id, row, payload, role, "final", text, current_turn))
+                    unphased.append(event(thread_id, row, payload, role, "final", text, current_turn, number))
             elif kind == "event_msg" and payload.get("type") == "task_complete":
                 text = payload.get("last_agent_message")
                 if isinstance(text, str) and text.strip():
                     completions.append(event(thread_id, row, payload, "assistant", "completion",
-                                             text.strip(), current_turn))
+                                             text.strip(), current_turn, number))
         except (ValueError, TypeError, AttributeError, OverflowError) as exc:
             errors.append({"kind": "source_parse", "path": str(path), "line": number, "error": str(exc)})
     # A completion repeats the final response; use it only when final phase is absent.
@@ -257,10 +258,30 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
     roots = [Path(p).expanduser().resolve() for p in config.get("source_roots", [])]
     if not roots:
         raise ValueError("config.source_roots must name local sessions and archived_sessions directories")
+    default_archived = ((Path(config['codex_home']) / 'archived_sessions').expanduser().resolve()
+                        if config.get('codex_home') else None)
+    seen_roots = {Path(p).resolve() for p in state.get('source_roots_seen', [])}
+    if 'source_roots_seen' not in state and state.get('scan_success_until'):
+        # Legacy successful scans required every configured root to exist.
+        # Be conservative until rebuild has recovered their exact root history.
+        seen_roots.update(roots)
+    present_roots, absent_optional_roots = [], []
     for root in roots:
-        if not root.is_dir():
+        try:
+            directory = stat.S_ISDIR(root.stat().st_mode)
+        except FileNotFoundError:
+            if root == default_archived and root not in seen_roots:
+                absent_optional_roots.append(str(root))
+                continue
             errors.append({"kind": "missing_source_root", "path": str(root)})
             continue
+        except OSError as exc:
+            errors.append({'kind': 'source_root_read', 'path': str(root), 'error': str(exc)})
+            continue
+        if not directory:
+            errors.append({'kind': 'missing_source_root', 'path': str(root), 'error': 'Not a directory'})
+            continue
+        present_roots.append(str(root))
         def failed(exc):
             errors.append({"kind": "enumeration", "path": str(getattr(exc, "filename", root)), "error": str(exc)})
         for folder, _, names in os.walk(root, onerror=failed, followlinks=False):
@@ -275,11 +296,11 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
     for path in sorted(files.values()):
         counts["files_enumerated"] += 1
         meta, events, source_errors, fingerprint = read_rollout(path)
-        errors.extend(source_errors)
         counts["files_read"] += int(fingerprint is not None)
-        counts["files_with_errors"] += bool(source_errors)
         thread_id = meta.get("id") or meta.get("session_id")
         if not thread_id:
+            errors.extend(source_errors)
+            counts["files_with_errors"] += bool(source_errors)
             errors.append({"kind": "missing_thread_id", "path": str(path)})
             continue
         observed_ids.add(thread_id)
@@ -294,6 +315,10 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
         if configured.get("hostId", "local") not in (None, "local"):
             counts["remote_threads_skipped"] += 1
             continue
+        # Parse errors from a positively identified out-of-scope thread cannot
+        # block progress for the selected sources. Unknown sources still fail.
+        errors.extend(source_errors)
+        counts["files_with_errors"] += bool(source_errors)
         counts["local_top_level_sources"] += 1
         old = state.get("sources", {}).get(thread_id, {})
         processed = set(old.get("event_ids", []))
@@ -356,6 +381,8 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
             "timezone": config.get("timezone", "Asia/Shanghai"), "interval": "[since,until)"},
             "coverage": {"complete_local": not errors, "source_scope": "local active + archived sessions",
                          "source_roots": [str(p) for p in roots], "errors": errors,
+                         "source_roots_present": present_roots,
+                         "absent_optional_source_roots": absent_optional_roots,
                          "counts": dict(counts), "known_remote_thread_ids_excluded": remote,
                          "limitations": ["Remote/cloud conversations are outside this local-file scan.",
                                          "Only saved user messages and final/completion responses are collected; tools and reasoning are excluded.",
@@ -386,10 +413,14 @@ def main() -> int:
         since = instant(state["scan_success_until"]) - timedelta(hours=48)
         if initial:
             since = max(since, initial)
+    elif state.get("coverage_since"):
+        since = instant(state["coverage_since"])
     elif initial:
         since = initial
     else:
         parser.error("Supply --since or config.initial_since for the first scan")
+    if not args.since and state.get("pending_review_since"):
+        since = min(since, instant(state["pending_review_since"]))
     if since >= until:
         parser.error("--since must precede --until")
     out = args.out.resolve()

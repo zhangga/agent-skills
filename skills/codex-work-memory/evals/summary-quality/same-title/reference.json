@@ -1,0 +1,50 @@
+{
+  "records": [
+    {
+      "item_id": "server-port",
+      "at": "server-final",
+      "anchors": [
+        "server-start",
+        "server-final"
+      ],
+      "title": "修复启动失败",
+      "summary": "服务端端口冲突处理已修复，启动回归测试通过。",
+      "status": "已验证",
+      "claims": [
+        {
+          "claim": "服务端启动回归通过",
+          "level": "observed",
+          "result": "passed",
+          "scope": "服务端启动测试",
+          "citation": {
+            "call_id": "server-test",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    },
+    {
+      "item_id": "client-assets",
+      "at": "client-final",
+      "anchors": [
+        "client-start",
+        "client-final"
+      ],
+      "title": "修复启动失败",
+      "summary": "客户端资源路径修正后，启动测试通过。",
+      "status": "已验证",
+      "claims": [
+        {
+          "claim": "客户端资源路径测试通过",
+          "level": "observed",
+          "result": "passed",
+          "scope": "客户端启动测试",
+          "citation": {
+            "call_id": "client-test",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    }
+  ]
+}

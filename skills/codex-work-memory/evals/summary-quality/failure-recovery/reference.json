@@ -1,0 +1,37 @@
+{
+  "records": [
+    {
+      "item_id": "request-timeout",
+      "at": "fix-final",
+      "anchors": [
+        "fix-request",
+        "fix-final"
+      ],
+      "title": "修复请求超时",
+      "summary": "第一次离线测试失败，修复后 3 个回归测试通过，尚未部署。",
+      "status": "已验证",
+      "claims": [
+        {
+          "claim": "首次回归存在失败",
+          "level": "observed",
+          "result": "failed",
+          "scope": "离线 unittest",
+          "citation": {
+            "call_id": "test-failed",
+            "kind": "tool_result"
+          }
+        },
+        {
+          "claim": "修复后 3 个回归测试通过",
+          "level": "observed",
+          "result": "passed",
+          "scope": "离线 unittest",
+          "citation": {
+            "call_id": "test-passed",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    }
+  ]
+}

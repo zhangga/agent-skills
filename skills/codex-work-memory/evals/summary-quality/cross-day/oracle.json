@@ -1,0 +1,38 @@
+{
+  "groups": [
+    {
+      "anchors": [
+        "cross-start",
+        "cross-blocked",
+        "cross-resume",
+        "cross-final"
+      ],
+      "latest_status": [
+        "已验证"
+      ],
+      "latest_level": "observed",
+      "latest_result": "passed",
+      "min_revisions": 2,
+      "history_results": [
+        "failed",
+        "passed"
+      ],
+      "required_tool_calls": [
+        "cross-failed",
+        "cross-passed"
+      ],
+      "facts": [
+        [
+          "连接池"
+        ],
+        [
+          "未部署"
+        ]
+      ]
+    }
+  ],
+  "tool_results": {
+    "cross-failed": "failed",
+    "cross-passed": "passed"
+  }
+}

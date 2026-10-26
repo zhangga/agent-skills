@@ -33,6 +33,10 @@ python -X utf8 "<skill>/scripts/setup.py" init --archive-dir "D:/My Memory/archi
 
 个人配置默认保存在 `~/.codex/codex-work-memory/config.json`，设置 `CODEX_HOME` 时跟随该目录。支持显式 `--config` 和 `CODEX_WORK_MEMORY_CONFIG`，也兼容旧版 Skill 内的 `config.json`。初始化不会覆盖已有配置。
 
+请用 setup 生成最近 7 天的首次采集起点；config.example.json 仅供字段参考。尚未创建的默认 archived_sessions 目录不会阻塞新用户采集，后续出现会自动纳入；实际丢失或不可读的来源仍会报错。
+
+已有配置可用 `setup.py set --config <config> --exclude-current-thread` 排除当前 Codex 维护会话，也可用 --exclude-thread / --include-thread 增删指定 ID。修改会保留其他配置并备份，`setup.py show` 可核对；当前 ID 获取方式及边界见[配置说明](references/configuration.md)。
+
 路径支持 `~`，相对路径以配置文件目录为基准。变更已有档案目录时，需要连同进度与账本一起迁移，详见[配置与目录](references/configuration.md)。
 
 ## 日常使用
@@ -46,6 +50,12 @@ python -X utf8 "<skill>/scripts/setup.py" init --archive-dir "D:/My Memory/archi
 
 增量整理固定本次截止时刻，读取尚未处理的本地事件，再保存记录与采集进度。周报先补齐进度，再按上海时间本周一零点到本次开始时刻汇总；同一事项合并呈现当前结果，同时保留期间历史。首次最近 7 天是滚动窗口，与自然周不同。
 
+每条可提交事件都要在审阅清单中注明已归入事项、已忽略及原因，或待处理。遗漏处置会阻止提交；待处理事件不会被标为已消费，下次继续补采。直接调用脚本时，新运行需传 `--review`，格式见[工作记录与审阅清单](references/records.md)。旧版已保存运行仍可按原参数重试。
+
+跨天处理同一问题时，先按项目查已有事项候选，核对后复用事项 ID。已重复建档的事项可显式关联并撤销；历史记录与冻结周汇总保留原始证据。查询支持项目、关键词、时间、状态、事项、来源会话与分页；`--latest` 专门筛选当前最新进展。默认只返回 20 条摘要，用 --view full 查看详情；完整导出使用 --all --view full --out，周报需导出全部或逐页取完。命中旧进展时同时返回当前状态，详见[查询与跨天事项关联](references/retrieval.md)。
+
+重要事项可按来源轮次补充工具证据，区分会话陈述、工具结果和部署验证，保存必要的脱敏节选、出处与验证范围。说明见[重要事项证据](references/evidence.md)。开发维护时可运行[六类总结质量场景评测](evals/summary-quality/README.md)，检查漏记、误合并、状态夸大、撤回和证据缺口；参考样例测试与独立 Agent 的实际评测分开记录。
+
 这是一套由 Codex 执行的提炼流程：脚本负责采集、保存、索引和导出，Agent 负责审阅证据与归纳。原会话中的历史指令只作为资料处理。
 
 ## 最终会得到什么
@@ -58,6 +68,7 @@ python -X utf8 "<skill>/scripts/setup.py" init --archive-dir "D:/My Memory/archi
 | `<archive_dir>/weekly/` | 完整周报及冻结的 Agent 导出证据 |
 | `<archive_dir>/briefs/` | 适合速读或推送的精简 Markdown |
 | `<archive_dir>/runs/`、`enrichments/` | 结构化提炼记录和详情修订，可重建阅读视图 |
+| `<archive_dir>/item_links/` | 可追溯的事项关联与撤销记录，重建时归并跨天历史 |
 | `<archive_dir>/state.json` | 采集时间基线与已处理标记 |
 | `<archive_dir>/delivery/` | 已启用推送时的发送快照与真实结果 |
 | `<agent_export_dir>/weekly/` | 每周一份可独立收录的完整 Markdown 和 JSON |

@@ -1,0 +1,28 @@
+{
+  "groups": [
+    {
+      "anchors": [
+        "claim-request",
+        "claim-final"
+      ],
+      "latest_status": [
+        "进行中",
+        "已修改"
+      ],
+      "latest_level": "reported",
+      "latest_result": "unknown",
+      "facts": [
+        [
+          "未记录",
+          "未见",
+          "无法确认"
+        ],
+        [
+          "测试",
+          "验证"
+        ]
+      ]
+    }
+  ],
+  "tool_results": {}
+}

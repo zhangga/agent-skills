@@ -1,8 +1,10 @@
 {
+  "_usage": "仅供字段参考，请运行 scripts/setup.py init 生成个人配置及最近 7 天的 initial_since；手动复制时必须填写带时区的 initial_since，或首次 collect 传 --since。",
   "schema_version": 1,
   "archive_dir": "./archive",
   "agent_export_dir": "./archive/agent",
   "timezone": "Asia/Shanghai",
+  "initial_since": null,
   "codex_home": "~/.codex",
   "source_roots": ["~/.codex/sessions", "~/.codex/archived_sessions"],
   "projects": [],

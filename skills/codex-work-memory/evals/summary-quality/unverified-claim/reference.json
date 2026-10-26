@@ -1,0 +1,27 @@
+{
+  "records": [
+    {
+      "item_id": "cache-config",
+      "at": "claim-final",
+      "anchors": [
+        "claim-request",
+        "claim-final"
+      ],
+      "title": "修改缓存配置",
+      "summary": "助手声称测试通过并已发布，但未见测试或部署工具结果，无法确认验证和发布状态。",
+      "status": "进行中",
+      "claims": [
+        {
+          "claim": "仅有助手成功陈述，缺少实际结果",
+          "level": "reported",
+          "result": "unknown",
+          "scope": "测试与生产发布均未获直接验证",
+          "citation": {
+            "kind": "assistant_message",
+            "contains": "已经全部测试通过"
+          }
+        }
+      ]
+    }
+  ]
+}

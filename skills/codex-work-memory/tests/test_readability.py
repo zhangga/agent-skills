@@ -35,8 +35,11 @@ class ReadabilityTests(unittest.TestCase):
         self.batch_file, self.records_file = self.root / 'batch.json', self.root / 'records.json'
         memory.write_json(self.batch_file, self.batch)
         memory.write_json(self.records_file, self.records)
+        self.review_file = self.root / 'review.json'
+        memory.write_json(self.review_file, [{'thread_id': 't1', 'event_id': 'e1',
+                                           'disposition': 'recorded', 'item_ids': ['startup']}])
         result = self.call('commit', '--batch', self.batch_file, '--records', self.records_file,
-                           '--brief', self.brief, '--mode', 'bootstrap', '--run-id', 'original')
+                           '--review', self.review_file, '--brief', self.brief, '--mode', 'bootstrap', '--run-id', 'original')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.patch = [{'item_id': 'startup', 'occurred_at': '2026-10-16T01:00:00Z',
             'details': {'context': '特定设备启动失败，需要定位触发条件。',
@@ -61,7 +64,7 @@ class ReadabilityTests(unittest.TestCase):
         before = {p: p.read_bytes() for p in paths}
         self.assertFalse(self.enrich()['already_saved'])
         self.assertEqual(before, {p: p.read_bytes() for p in paths})
-        query = self.call('query')
+        query = self.call('query', '--view', 'full')
         self.assertEqual(query.returncode, 0, query.stderr)
         result = json.loads(query.stdout)
         self.assertEqual(result['records'][0]['details'], self.patch[0]['details'])
@@ -114,6 +117,10 @@ class ReadabilityTests(unittest.TestCase):
         path = self.archive / 'runs' / 'original.json'
         old = memory.read(path)
         old.pop('source_catalog')
+        old.pop('event_reviews')
+        old.pop('batch_checkpoints')
+        old['coverage'] = self.batch['coverage']
+        old['schema_version'] = 1
         payload = {k: v for k, v in old.items() if k not in {'payload_hash', 'created_at', 'schema_version'}}
         old['payload_hash'] = memory.digest(payload)
         memory.write_json(path, old)

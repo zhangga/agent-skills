@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 BASE = Path(__file__).resolve().parent
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'memory.py'
@@ -41,12 +42,37 @@ class MemoryTests(unittest.TestCase):
         return subprocess.run([sys.executable, '-X', 'utf8', str(SCRIPT), *args, '--config', str(self.cfg)],
                               capture_output=True, text=True, encoding='utf-8')
 
-    def commit(self, run='run-1', batch=None, records=None):
+    def commit(self, run='run-1', batch=None, records=None, review=...):
+        batch = batch if batch is not None else self.batch
+        records = records if records is not None else self.records
         bf, rf = self.root / 'batch.json', self.root / 'records.json'
-        bf.write_text(json.dumps(batch if batch is not None else self.batch), encoding='utf-8')
-        rf.write_text(json.dumps(records if records is not None else self.records), encoding='utf-8')
+        bf.write_text(json.dumps(batch), encoding='utf-8')
+        rf.write_text(json.dumps(records), encoding='utf-8')
+        if review is ...:
+            # Fixture events not cited by a record were deliberately reviewed
+            # and dismissed. Tests of missing review pass None or a partial list.
+            review = []
+            for thread in batch['threads']:
+                if thread['checkpoint'].get('eligible', True) is False:
+                    continue
+                for event in thread['events']:
+                    if event.get('context_only'):
+                        continue
+                    ids = sorted({r['item_id'] for r in records for ref in r['source_refs']
+                                  if ref['thread_id'] == thread['thread_id'] and event['event_id'] in ref['event_ids']})
+                    entry = {'thread_id': thread['thread_id'], 'event_id': event['event_id']}
+                    if ids:
+                        entry.update(disposition='recorded', item_ids=ids)
+                    else:
+                        entry.update(disposition='ignored', reason='Reviewed synthetic non-work event')
+                    review.append(entry)
+        review_args = []
+        if review is not None:
+            review_file = self.root / 'review.json'
+            review_file.write_text(json.dumps(review), encoding='utf-8')
+            review_args = ['--review', str(review_file)]
         return self.call('commit', '--batch', str(bf), '--records', str(rf), '--brief', str(self.brief),
-                         '--mode', 'bootstrap', '--run-id', run)
+                         '--mode', 'bootstrap', '--run-id', run, *review_args)
 
     def state(self):
         return json.loads((self.archive / 'state.json').read_text(encoding='utf-8'))
@@ -60,6 +86,137 @@ class MemoryTests(unittest.TestCase):
         self.assertTrue(self.assertOk(self.commit())['already_saved'])
         self.assertEqual(len(list((self.archive / 'runs').glob('*.json'))), 1)
         self.assertEqual(self.state()['sources']['thread-1']['event_ids'], ['evt_1'])
+
+    def test_new_commit_without_review_or_with_unaccounted_event_is_rejected(self):
+        for review in (None, []):
+            result = self.commit(review=review)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('review', result.stderr.lower())
+            self.assertFalse((self.archive / 'runs' / 'run-1.json').exists())
+            self.assertFalse((self.archive / 'state.json').exists())
+
+    def test_review_rejects_duplicate_unknown_context_and_ineligible_events(self):
+        recorded = {'thread_id': 'thread-1', 'event_id': 'evt_1', 'disposition': 'recorded', 'item_ids': ['item-1']}
+        for review in ([recorded, recorded], [dict(recorded, event_id='missing')],
+                       [dict(recorded, thread_id='missing')]):
+            self.assertNotEqual(self.commit(review=review).returncode, 0)
+        self.batch['threads'][0]['events'].insert(0, {'event_id': 'context', 'context_only': True,
+                                                   'time': '2026-10-15T01:00:00Z'})
+        extra = {'thread_id': 'thread-1', 'event_id': 'context', 'disposition': 'ignored', 'reason': 'old'}
+        self.assertNotEqual(self.commit(review=[recorded, extra]).returncode, 0)
+        self.batch['coverage']['complete_local'] = False
+        self.batch['threads'][0]['checkpoint']['eligible'] = False
+        self.assertNotEqual(self.commit(records=[], review=[dict(extra, event_id='evt_1')]).returncode, 0)
+
+    def test_review_requires_matching_items_and_explicit_skip_reason(self):
+        base = {'thread_id': 'thread-1', 'event_id': 'evt_1'}
+        for review in (dict(base, disposition='recorded', item_ids=['different']),
+                       dict(base, disposition='recorded', item_ids=['item-1', 'item-1']),
+                       dict(base, disposition='ignored', reason='Cannot ignore a cited event'),
+                       dict(base, disposition='pending', reason='Cannot defer a cited event'),
+                       dict(base, disposition='unsupported')):
+            self.assertNotEqual(self.commit(review=[review]).returncode, 0)
+        for disposition in ('ignored', 'pending'):
+            for reason in (None, '', '   '):
+                self.assertNotEqual(self.commit(records=[], review=[dict(base, disposition=disposition,
+                                                                        reason=reason)]).returncode, 0)
+        result = self.commit(records=[], review=[dict(base, disposition='ignored', reason='Pure status question')])
+        self.assertOk(result)
+        run = memory.read(self.archive / 'runs/run-1.json')
+        self.assertEqual(run['event_reviews'][0]['reason'], 'Pure status question')
+        self.assertEqual(self.state()['sources']['thread-1']['event_ids'], ['evt_1'])
+
+    def test_pending_events_survive_rebuild_and_later_collection_then_resolve(self):
+        sessions = self.root / 'sessions'
+        sessions.mkdir()
+        rows = [{'type': 'session_meta', 'payload': {'id': 'thread-1'}}]
+        for stamp, content in [('2026-10-16T01:00:00Z', 'Completed work'),
+                               ('2026-10-16T02:00:00Z', 'Needs further review')]:
+            rows.append({'type': 'response_item', 'timestamp': stamp, 'payload': {
+                'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': content}]}})
+        (sessions / 'thread.jsonl').write_text('\n'.join(json.dumps(r) for r in rows), encoding='utf-8')
+        cfg = {'archive_dir': str(self.archive), 'source_roots': [str(sessions)]}
+        memory.write_json(self.cfg, cfg)
+        batch = collector.collect(cfg, {}, collector.instant(self.batch['window']['since']),
+                                  collector.instant(self.batch['window']['until']))
+        first, pending = batch['threads'][0]['events']
+        records = copy.deepcopy(self.records)
+        records[0]['source_refs'][0]['event_ids'] = [first['event_id']]
+        reviews = [dict(thread_id='thread-1', event_id=first['event_id'], disposition='recorded', item_ids=['item-1']),
+                   dict(thread_id='thread-1', event_id=pending['event_id'], disposition='pending', reason='Need source context')]
+        self.assertOk(self.commit(batch=batch, records=records, review=reviews))
+        before = self.state()
+        self.assertEqual(before['sources']['thread-1']['event_ids'], [first['event_id']])
+        self.assertEqual(before['pending_review_since'], pending['time'])
+        self.assertIsNone(before['scan_success_until'])
+        self.assertFalse(memory.read(self.archive / 'runs/run-1.json')['coverage']['complete_local'])
+        self.assertTrue(self.assertOk(self.commit(batch=batch, records=records, review=reviews))['already_saved'])
+        self.assertOk(self.call('rebuild'))
+        self.assertEqual(before, self.state())
+        # Enrichment still validates the original batch, including deferred events.
+        with memory.lock(self.archive):
+            memory.enrichment(self.archive, 'run-1', 'details',
+                              [dict(records[0], details={'context': 'Synthetic context'})], batch)
+        later = dict(self.batch, window={'since': '2026-10-20T00:00:00Z', 'until': '2026-10-21T00:00:00Z'}, threads=[])
+        self.assertOk(self.commit(run='later-scan', batch=later, records=[]))
+        output = self.root / 'resume.json'
+        result = subprocess.run([sys.executable, '-X', 'utf8', str(SCRIPT.with_name('collect.py')),
+                                 '--config', str(self.cfg), '--until', '2026-10-25T00:00:00Z', '--out', str(output)],
+                                capture_output=True, text=True, encoding='utf-8')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resume = memory.read(output)
+        self.assertLessEqual(collector.instant(resume['window']['since']), collector.instant(pending['time']))
+        new_ids = [e['event_id'] for t in resume['threads'] for e in t['events'] if not e.get('context_only')]
+        self.assertEqual(new_ids, [pending['event_id']])
+        final_review = [dict(reviews[1], disposition='ignored', reason='Reviewed: no further work')]
+        self.assertOk(self.commit(run='resumed', batch=resume, records=[], review=final_review))
+        self.assertEqual(self.state()['pending_reviews'], [])
+        self.assertIsNone(self.state()['pending_review_since'])
+        self.assertEqual(self.state()['scan_success_until'], '2026-10-25T00:00:00Z')
+
+    def test_changed_review_cannot_rewrite_frozen_run(self):
+        review = [{'thread_id': 'thread-1', 'event_id': 'evt_1', 'disposition': 'ignored', 'reason': 'status'}]
+        self.assertOk(self.commit(records=[], review=review))
+        path = self.archive / 'runs/run-1.json'
+        before = path.read_bytes()
+        review[0]['reason'] = 'different'
+        self.assertNotEqual(self.commit(records=[], review=review).returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_pending_commit_recovers_after_view_failure(self):
+        review = [{'thread_id': 'thread-1', 'event_id': 'evt_1', 'disposition': 'pending', 'reason': 'Not reviewed yet'}]
+        bf, rf, vf = self.root / 'batch.json', self.root / 'records.json', self.root / 'review.json'
+        memory.write_json(bf, self.batch)
+        memory.write_json(rf, [])
+        memory.write_json(vf, review)
+        argv = [str(SCRIPT), 'commit', '--config', str(self.cfg), '--batch', str(bf), '--records', str(rf),
+                '--review', str(vf), '--brief', str(self.brief), '--mode', 'bootstrap', '--run-id', 'run-1']
+        with patch.object(sys, 'argv', argv), patch.object(memory.presentation, 'html_index', side_effect=OSError('view failure')):
+            with self.assertRaisesRegex(OSError, 'view failure'):
+                memory.main()
+        path = self.archive / 'runs/run-1.json'
+        frozen = path.read_bytes()
+        self.assertFalse((self.archive / 'state.json').exists())
+        self.assertTrue(self.assertOk(self.commit(records=[], review=review))['already_saved'])
+        self.assertEqual(path.read_bytes(), frozen)
+        self.assertEqual(self.state()['sources']['thread-1']['event_ids'], [])
+        self.assertEqual(self.state()['pending_review_since'], '2026-10-16T01:00:00Z')
+
+    def test_legacy_run_with_catalog_retries_without_review_but_cannot_create_new_run(self):
+        self.assertOk(self.commit())
+        path = self.archive / 'runs/run-1.json'
+        old = memory.read(path)
+        old.pop('event_reviews')
+        old.pop('batch_checkpoints')
+        old['coverage'] = self.batch['coverage']
+        old['schema_version'] = 1
+        old['payload_hash'] = memory.digest({k: v for k, v in old.items()
+                                             if k not in {'payload_hash', 'created_at', 'schema_version'}})
+        memory.write_json(path, old)
+        before = path.read_bytes()
+        self.assertTrue(self.assertOk(self.commit(review=None))['already_saved'])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotEqual(self.commit(run='new-legacy', review=None).returncode, 0)
 
     def test_same_run_different_content_is_rejected(self):
         self.assertOk(self.commit())

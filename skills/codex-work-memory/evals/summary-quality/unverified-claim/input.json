@@ -1,0 +1,49 @@
+{
+  "since": "2026-10-16T00:00:00Z",
+  "until": "2026-10-19T00:00:00Z",
+  "threads": [
+    {
+      "thread_id": "claim",
+      "rows": [
+        {
+          "type": "turn_context",
+          "timestamp": "2026-10-16T01:00:00Z",
+          "payload": {
+            "turn_id": "claim-turn"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:00:00Z",
+          "payload": {
+            "type": "message",
+            "id": "claim-request",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "修改缓存配置并说明验证情况。"
+              }
+            ]
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:03:00Z",
+          "payload": {
+            "type": "message",
+            "id": "claim-final",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "已经全部测试通过并发布到生产。"
+              }
+            ],
+            "phase": "final"
+          }
+        }
+      ]
+    }
+  ]
+}

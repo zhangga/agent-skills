@@ -1,0 +1,52 @@
+{
+  "groups": [
+    {
+      "anchors": [
+        "server-start",
+        "server-final"
+      ],
+      "latest_status": [
+        "已验证"
+      ],
+      "latest_level": "observed",
+      "latest_result": "passed",
+      "required_tool_calls": [
+        "server-test"
+      ],
+      "facts": [
+        [
+          "服务端"
+        ],
+        [
+          "端口"
+        ]
+      ]
+    },
+    {
+      "anchors": [
+        "client-start",
+        "client-final"
+      ],
+      "latest_status": [
+        "已验证"
+      ],
+      "latest_level": "observed",
+      "latest_result": "passed",
+      "required_tool_calls": [
+        "client-test"
+      ],
+      "facts": [
+        [
+          "客户端"
+        ],
+        [
+          "资源路径"
+        ]
+      ]
+    }
+  ],
+  "tool_results": {
+    "server-test": "passed",
+    "client-test": "passed"
+  }
+}

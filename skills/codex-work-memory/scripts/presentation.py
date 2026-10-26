@@ -30,6 +30,9 @@ def items_grouped(records):
         project["items"].setdefault(record["item_id"], []).append(record)
     for project in projects.values():
         for history in project["items"].values():
+            # Input follows ledger creation order, then numeric record order.
+            # For equal occurrence times the later revision wins, as in exports.
+            history.reverse()
             history.sort(key=lambda item: datetime.fromisoformat(item["occurred_at"].replace("Z", "+00:00")), reverse=True)
         project["items"] = dict(sorted(project["items"].items(), key=lambda pair: datetime.fromisoformat(pair[1][0]["occurred_at"].replace("Z", "+00:00")), reverse=True))
     return dict(sorted(projects.items(), key=lambda pair: pair[1]["name"].casefold()))
@@ -70,7 +73,27 @@ def md_text(value):
     return str(value).replace("\n", " ").replace("[", "\\[").replace("]", "\\]")
 
 
-def detail_md(record, catalog):
+def evidence_text(record, catalog):
+    levels = {'reported': '会话陈述', 'observed': '工具结果', 'deployment': '部署验证'}
+    results = {'passed': '通过', 'failed': '失败', 'unknown': '未确认', 'reverted': '已撤回'}
+    lines = []
+    for claim in record.get('details', {}).get('evidence', []):
+        lines += [f"{levels[claim['level']]} · {results[claim['result']]} · {claim['scope']}", claim['claim']]
+        if claim.get('environment'):
+            lines.append('环境：' + claim['environment'])
+        for eid in claim['evidence_ids']:
+            source = catalog.get(eid)
+            if source is None:
+                lines.append('证据节选未收录：' + eid)
+                continue
+            lines.append(f"来源：{source['source_path']}:{source['source_line']} · {source['time']} · {eid}")
+            if source.get('truncated') or source.get('redacted'):
+                lines.append('节选说明：' + '；'.join(label for key, label in [('truncated', '内容已截断'), ('redacted', '敏感值已脱敏')] if source.get(key)))
+            lines += [source['excerpt'], '']
+    return '\n'.join(lines)
+
+
+def detail_md(record, catalog, evidence_catalog=None):
     lines = [record["summary"]]
     for key, label in [("outcome", "结果与证据"), ("follow_up", "下一步"), ("knowledge", "可复用结论")]:
         if record.get(key):
@@ -85,6 +108,8 @@ def detail_md(record, catalog):
         lines += ["", "**成果与文件**", ""]
         for artifact in details["artifacts"]:
             lines.append(f"- {md_text(artifact['label'])}：`{artifact['path']}`")
+    if details.get('evidence'):
+        lines += ['', '**证据与验证范围**', ''] + ['    ' + line for line in evidence_text(record, evidence_catalog or {}).splitlines()]
     lines += ["", "**来源会话**", ""]
     for ref in record["source_refs"]:
         title, meta = source_name(ref, catalog)
@@ -97,24 +122,24 @@ def detail_md(record, catalog):
     return "\n".join(lines)
 
 
-def item_md(item_id, history, catalog):
+def item_md(item_id, history, catalog, evidence_catalog=None):
     latest = history[0]
-    lines = [f'<a id="{anchor(latest["project_id"] + ":" + item_id)}"></a>', "", "### " + md_text(latest["title"]), "", f"**{latest['status']}** · {latest['category']} · 最近进展 {when(latest['occurred_at'])}", "", detail_md(latest, catalog)]
+    lines = [f'<a id="{anchor(latest["project_id"] + ":" + item_id)}"></a>', "", "### " + md_text(latest["title"]), "", f"**{latest['status']}** · {latest['category']} · 最近进展 {when(latest['occurred_at'])}", "", detail_md(latest, catalog, evidence_catalog)]
     if len(history) > 1:
         lines += ["", f"#### 历史进展（{len(history) - 1} 条）", "", "以下是较早记录；当前状态以上面的最近进展为准。"]
         for earlier in history[1:]:
-            lines += ["", f"##### {when(earlier['occurred_at'])} · {earlier['status']}", "", detail_md(earlier, catalog)]
+            lines += ["", f"##### {when(earlier['occurred_at'])} · {earlier['status']}", "", detail_md(earlier, catalog, evidence_catalog)]
     return "\n".join(lines) + "\n"
 
 
-def project_md(pid, project, catalog, heading=1):
+def project_md(pid, project, catalog, heading=1, evidence_catalog=None):
     items = project["items"]
     count = sum(len(h) for h in items.values())
     lines = ["#" * heading + " " + md_text(project["name"]), "", f"{len(items)} 个工作事项 · {count} 条进展记录 · 时间均为上海时间", "", "**事项目录**", ""]
     for iid, history in items.items():
         latest = history[0]
         lines.append(f"- [{md_text(latest['title'])}](#{anchor(pid + ':' + iid)}) · {latest['status']} · {when(latest['occurred_at'], True)}")
-    lines += [""] + [item_md(iid, history, catalog) for iid, history in items.items()]
+    lines += [""] + [item_md(iid, history, catalog, evidence_catalog) for iid, history in items.items()]
     return "\n".join(lines)
 
 
@@ -128,14 +153,16 @@ def report_md(run):
     for pid, project in groups.items():
         lines.append(f"- [{md_text(project['name'])}](#project-{anchor(pid)}) · {len(project['items'])} 个事项")
     for pid, project in groups.items():
-        lines += ["", f'<a id="project-{anchor(pid)}"></a>', "", project_md(pid, project, catalog, 2)]
+        lines += ["", f'<a id="project-{anchor(pid)}"></a>', "", project_md(pid, project, catalog, 2, run.get('evidence_catalog', {}))]
     if not run["records"]:
         lines += ["本次无新增工作事项。", ""]
     coverage = run.get("coverage", {})
+    if coverage.get("pending_review_events"):
+        lines += [f"待处理事件 {coverage['pending_review_events']} 条，尚未消费，将在后续补采。", ""]
     errors = coverage.get("errors", [])
     lines += ["", "## 来源与覆盖范围", "", "本机活动与已归档 Codex 会话；远程及纯云端会话未覆盖。", "", f"读取 {counts.get('files_read', 0)} 个日志文件；{counts.get('threads_with_new_events', 0)} 个会话包含新增内容，共 {counts.get('new_events', 0)} 条新增事件；读取或完整性问题 {len(errors)} 项。", "", "本次本地扫描完整。" if coverage.get("complete_local") is True else "本次存在覆盖缺口，完整采集基线尚未越过缺口；后续将补跑。", "", f"生成时间：{when(run['created_at'])}", ""]
     if errors:
-        labels = {"missing_source_root": "来源目录不可用", "enumeration": "目录枚举失败", "metadata_read": "会话索引读取失败", "metadata_parse": "会话索引解析失败", "source_read": "日志读取失败", "source_parse": "日志解析失败", "source_changed": "读取期间日志变化", "missing_thread_id": "日志缺少会话标识", "metadata_source_unavailable": "近期会话日志缺失"}
+        labels = {"missing_source_root": "来源目录不可用", "source_root_read": "来源目录读取失败", "enumeration": "目录枚举失败", "metadata_read": "会话索引读取失败", "metadata_parse": "会话索引解析失败", "source_read": "日志读取失败", "source_parse": "日志解析失败", "source_changed": "读取期间日志变化", "missing_thread_id": "日志缺少会话标识", "metadata_source_unavailable": "近期会话日志缺失"}
         kinds = {}
         for error in errors:
             label = labels.get(error.get("kind"), "其他来源问题")
@@ -151,6 +178,7 @@ def html_index(records, catalog, ledger):
 
     esc = lambda value: html.escape(str(value), quote=True)
     groups = items_grouped(records)
+    evidence_catalog = {eid: entry for run in ledger for eid, entry in run.get('evidence_catalog', {}).items()}
 
     def paragraph(value, css=''):
         return f"<p class='{css}'>" + esc(value).replace('\n', '<br>') + '</p>'
@@ -174,6 +202,8 @@ def html_index(records, catalog, ledger):
             if record.get(key):
                 body += section(label, paragraph(record[key]), 'field-followup' if key == 'follow_up' else '')
         details = record.get('details', {})
+        if details.get('evidence'):
+            body += section('证据与验证范围', '<pre style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(evidence_text(record, evidence_catalog)) + '</pre>')
         if details.get('context'):
             body += section('背景与目标', paragraph(details['context']))
         for key, label in [('approach', '解决过程'), ('decisions', '关键判断'), ('validation', '验证记录'), ('limitations', '边界与未完成项')]:

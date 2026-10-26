@@ -1,0 +1,38 @@
+{
+  "groups": [
+    {
+      "anchors": [
+        "roll-request",
+        "roll-cancel",
+        "roll-final"
+      ],
+      "latest_status": [
+        "进行中",
+        "已修改"
+      ],
+      "latest_level": "observed",
+      "latest_result": "reverted",
+      "history_results": [
+        "passed",
+        "reverted"
+      ],
+      "required_tool_calls": [
+        "deploy",
+        "rollback"
+      ],
+      "facts": [
+        [
+          "v1"
+        ],
+        [
+          "撤回",
+          "回滚"
+        ]
+      ]
+    }
+  ],
+  "tool_results": {
+    "deploy": "passed",
+    "rollback": "reverted"
+  }
+}

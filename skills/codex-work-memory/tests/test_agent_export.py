@@ -137,6 +137,14 @@ class AgentExportTests(unittest.TestCase):
         self.assertEqual(item["latest"]["revision_id"], "bootstrap-a:10")
         self.assertEqual(item["history"][0]["revision_id"], "daily-z:0")
         self.assertEqual(item["history"][-1]["revision_id"], "bootstrap-a:9")
+        chronological = older['records'] + newer['records']
+        history = memory.presentation.items_grouped(chronological)['demo']['items']['task-a']
+        self.assertEqual(history[0], item['latest']['record'])
+        self.assertEqual(history[1], item['history'][-1]['record'])
+        page = memory.presentation.html_index(chronological, {}, [older, newer])
+        self.assertIn('<p class=\'preview\'>new revision 10</p>', page)
+        markdown = memory.presentation.project_md('demo', memory.presentation.items_grouped(chronological)['demo'], {})
+        self.assertLess(markdown.index('new revision 10'), markdown.index('new revision 9'))
 
     def test_failure_then_retry_preserves_evidence_and_canonical_files(self):
         run = weekly()
@@ -167,6 +175,21 @@ class AgentExportTests(unittest.TestCase):
         self.assertIn("source_read", export.markdown(snapshot))
         complete = export.build_snapshot(weekly(), [scan(records=[])], "report-save")
         self.assertTrue(complete["coverage_summary"]["complete_local_window"])
+
+    def test_overlapping_complete_scan_cannot_hide_pending_reviews(self):
+        original = scan('original', records=[])
+        backfill = scan('backfill', records=[], complete=False)
+        backfill['event_reviews'] = [{'thread_id': 'demo-thread', 'event_id': 'demo-event',
+                                     'disposition': 'pending', 'reason': 'Newly discovered history'}]
+        snapshot = export.build_snapshot(weekly(), [original, backfill], 'report-save')
+        self.assertFalse(snapshot['coverage_summary']['complete_local_window'])
+        self.assertEqual(snapshot['coverage_summary']['pending_review_events'], 1)
+        self.assertIn('待处理事件 1 条', export.markdown(snapshot))
+        resolved = scan('resolved', records=[])
+        resolved['checkpoints'] = {'demo-thread': {'eligible': True, 'event_ids': ['demo-event']}}
+        complete = export.build_snapshot(weekly(), [original, backfill, resolved], 'report-save')
+        self.assertTrue(complete['coverage_summary']['complete_local_window'])
+        self.assertEqual(complete['coverage_summary']['pending_review_events'], 0)
 
     def test_snapshot_tampering_and_run_id_collisions_fail(self):
         run = weekly()

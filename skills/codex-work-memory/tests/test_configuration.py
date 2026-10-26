@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -60,6 +61,15 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.profile.read_bytes(), original)
         self.assertEqual(json.loads(state.read_text())["scan_success_until"], "2026-10-20T00:00:00Z")
 
+    def test_init_generates_a_usable_seven_day_baseline_without_a_fixed_example_date(self):
+        earliest = datetime.now(timezone.utc) - timedelta(days=7, seconds=1)
+        setup.initialize(self.profile, codex_home=self.root / 'codex')
+        cfg = configuration.load_config(self.profile)
+        since = collector.instant(cfg['initial_since'])
+        self.assertLessEqual(earliest, since)
+        self.assertLessEqual(since, datetime.now(timezone.utc) - timedelta(days=7))
+        self.assertEqual(since.utcoffset(), timedelta(0))
+
     def test_old_profile_defaults_export_and_does_not_mutate_input(self):
         raw = {"archive_dir": "../archive", "codex_home": "../codex", "projects": [{"path": "../project", "projectId": "example"}]}
         cfg = configuration.normalize_config(raw, self.profile)
@@ -114,6 +124,25 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(batch.read_text(encoding="utf-8"))["window"]["since"], "2026-10-22T00:00:00Z")
 
+    def test_pending_review_overrides_lookback_and_initial_since_but_not_explicit_window(self):
+        codex = self.root / 'codex'
+        for name in ('sessions', 'archived_sessions'):
+            (codex / name).mkdir(parents=True)
+        setup.initialize(self.profile, codex_home=codex, initial_since='2026-10-20T00:00:00Z')
+        archive = Path(configuration.load_config(self.profile)['archive_dir'])
+        archive.mkdir()
+        state = {'scan_success_until': '2026-10-24T00:00:00Z',
+                 'pending_review_since': '2026-10-10T02:00:00Z'}
+        (archive / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+        output = self.root / 'pending.json'
+        command = [sys.executable, '-X', 'utf8', str(SCRIPTS / 'collect.py'), '--config', str(self.profile),
+                   '--until', '2026-10-25T00:00:00Z', '--out', str(output)]
+        for extra, expected in [([], '2026-10-10T02:00:00Z'),
+                                (['--since', '2026-10-23T00:00:00Z'], '2026-10-23T00:00:00Z')]:
+            result = subprocess.run(command + extra, capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(output.read_text(encoding='utf-8'))['window']['since'], expected)
+
     def test_posix_case_and_windows_longest_path(self):
         projects = [{"projectId": "upper", "label": "Upper", "path": "/work/Foo"},
                     {"projectId": "lower", "label": "Lower", "path": "/work/foo"},
@@ -137,6 +166,90 @@ class ConfigurationTests(unittest.TestCase):
         (ledger_dir / "sample-run.json").write_text(json.dumps(ledger), encoding="utf-8")
         with self.assertRaisesRegex(delivery.DeliveryError, "non-retryable"):
             delivery.deliver(self.profile, archive, "sample-run", brief, runner=lambda *args: self.fail("must not call CLI"))
+
+    def test_set_exclusions_preserves_profile_archive_and_exact_backup(self):
+        setup.initialize(self.profile, codex_home=self.root / 'codex', excluded_thread_ids=['original'])
+        raw = json.loads(self.profile.read_text(encoding='utf-8'))
+        raw.update(archive_dir='../archive', custom={'keep': 'unchanged'})
+        raw['delivery']['recipient_open_id'] = 'ou_synthetic'
+        self.profile.write_text(json.dumps(raw), encoding='utf-8')
+        archive = Path(configuration.load_config(self.profile)['archive_dir'])
+        archive.mkdir()
+        state = archive / 'state.json'
+        state.write_text('{"scan_success_until":"2026-10-20T00:00:00Z"}', encoding='utf-8')
+        before, before_state = self.profile.read_bytes(), state.read_bytes()
+        result = setup.set_exclusions(self.profile, ['maintenance', 'maintenance'])
+        updated = json.loads(self.profile.read_text(encoding='utf-8'))
+        self.assertEqual(updated, dict(raw, excluded_thread_ids=['original', 'maintenance']))
+        self.assertEqual(Path(result['backup']).read_bytes(), before)
+        self.assertEqual(state.read_bytes(), before_state)
+        same_bytes = self.profile.read_bytes()
+        self.assertFalse(setup.set_exclusions(self.profile, ['maintenance'])['changed'])
+        self.assertEqual(self.profile.read_bytes(), same_bytes)
+        self.assertEqual(len(list(self.profile.parent.glob('config.json.bak-*'))), 1)
+        result = setup.set_exclusions(self.profile, include=['original'])
+        self.assertEqual(result['excluded_thread_ids'], ['maintenance'])
+
+    def test_current_thread_cli_and_show_require_no_guessed_session_id(self):
+        setup.initialize(self.profile, codex_home=self.root / 'codex')
+        env = dict(os.environ, CODEX_THREAD_ID='current-test-thread')
+        base = [sys.executable, '-B', '-X', 'utf8', str(SCRIPTS / 'setup.py')]
+        result = subprocess.run(base + ['set', '--config', str(self.profile), '--exclude-current-thread'],
+                                env=env, capture_output=True, text=True, encoding='utf-8')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shown = subprocess.run(base + ['show', '--config', str(self.profile)],
+                               env=env, capture_output=True, text=True, encoding='utf-8')
+        result = json.loads(shown.stdout)
+        self.assertEqual(result['current_thread_id'], 'current-test-thread')
+        self.assertEqual(result['excluded_thread_ids'], ['current-test-thread'])
+        before = self.profile.read_bytes()
+        with mock.patch.dict(os.environ, {'CODEX_THREAD_ID': '', 'CODEX_SESSION_ID': 'not-a-thread-id'}):
+            with self.assertRaisesRegex(ValueError, 'unavailable'):
+                setup.set_exclusions(self.profile, exclude_current=True)
+        self.assertEqual(self.profile.read_bytes(), before)
+
+    def test_set_rejects_invalid_conflicting_and_unrelated_edits(self):
+        setup.initialize(self.profile, codex_home=self.root / 'codex')
+        before = self.profile.read_bytes()
+        for extra in [[], ['--exclude-thread', 'bad id'], ['--exclude-thread', ''],
+                      ['--exclude-thread', 'a', '--include-thread', 'a'],
+                      ['--archive-dir', str(self.root / 'elsewhere'), '--exclude-thread', 'a']]:
+            result = subprocess.run([sys.executable, '-B', '-X', 'utf8', str(SCRIPTS / 'setup.py'),
+                                     'set', '--config', str(self.profile), *extra],
+                                    capture_output=True, text=True, encoding='utf-8')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.profile.read_bytes(), before)
+        self.assertEqual(list(self.profile.parent.glob('config.json.bak-*')), [])
+
+    def test_set_lock_and_replace_failure_do_not_damage_existing_profile(self):
+        setup.initialize(self.profile, codex_home=self.root / 'codex')
+        before = self.profile.read_bytes()
+        with setup.profile_lock(self.profile), self.assertRaisesRegex(RuntimeError, 'lock'):
+            setup.set_exclusions(self.profile, ['maintenance'])
+        with mock.patch.object(setup.os, 'replace', side_effect=OSError('synthetic replace failure')):
+            with self.assertRaises(OSError):
+                setup.set_exclusions(self.profile, ['maintenance'])
+        self.assertEqual(self.profile.read_bytes(), before)
+        self.assertEqual(list(self.profile.parent.glob('config.json.tmp-*')), [])
+        self.assertEqual(next(self.profile.parent.glob('config.json.bak-*')).read_bytes(), before)
+
+    def test_exclusion_update_affects_collection_and_can_be_reversed(self):
+        codex = self.root / 'codex'
+        sessions = codex / 'sessions'
+        sessions.mkdir(parents=True)
+        rows = [{'type': 'session_meta', 'payload': {'id': 'maintenance'}},
+                {'type': 'response_item', 'timestamp': '2026-10-20T01:00:00Z', 'payload': {
+                    'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'Synthetic maintenance'}]}}]
+        (sessions / 'maintenance.jsonl').write_text('\n'.join(json.dumps(r) for r in rows), encoding='utf-8')
+        setup.initialize(self.profile, codex_home=codex)
+        start, end = collector.instant('2026-10-20T00:00:00Z'), collector.instant('2026-10-21T00:00:00Z')
+        setup.set_exclusions(self.profile, ['maintenance'])
+        batch = collector.collect(configuration.load_config(self.profile), {}, start, end)
+        self.assertEqual(batch['threads'], [])
+        self.assertTrue(batch['coverage']['complete_local'])
+        setup.set_exclusions(self.profile, include=['maintenance'])
+        batch = collector.collect(configuration.load_config(self.profile), {}, start, end)
+        self.assertEqual([t['thread_id'] for t in batch['threads']], ['maintenance'])
 
 
 if __name__ == "__main__":

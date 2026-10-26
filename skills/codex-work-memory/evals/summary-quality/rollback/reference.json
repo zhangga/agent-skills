@@ -1,0 +1,39 @@
+{
+  "records": [
+    {
+      "item_id": "trial-v2",
+      "at": "roll-final",
+      "anchors": [
+        "roll-request",
+        "roll-cancel",
+        "roll-final"
+      ],
+      "title": "撤回出现回归的新方案",
+      "summary": "试用后发现回归，已回滚到 v1；新方案撤回，后续需要修复再评估。",
+      "status": "进行中",
+      "claims": [
+        {
+          "claim": "试用部署和健康检查通过",
+          "level": "deployment",
+          "result": "passed",
+          "scope": "部署及健康检查",
+          "citation": {
+            "call_id": "deploy",
+            "kind": "tool_result"
+          },
+          "environment": "staging"
+        },
+        {
+          "claim": "出现回归后已回滚至 v1",
+          "level": "observed",
+          "result": "reverted",
+          "scope": "staging 回滚结果",
+          "citation": {
+            "call_id": "rollback",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    }
+  ]
+}

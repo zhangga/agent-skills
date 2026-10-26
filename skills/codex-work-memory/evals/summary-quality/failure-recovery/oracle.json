@@ -1,0 +1,36 @@
+{
+  "groups": [
+    {
+      "anchors": [
+        "fix-request",
+        "fix-final"
+      ],
+      "latest_status": [
+        "已验证"
+      ],
+      "latest_level": "observed",
+      "latest_result": "passed",
+      "history_results": [
+        "failed",
+        "passed"
+      ],
+      "required_tool_calls": [
+        "test-failed",
+        "test-passed"
+      ],
+      "facts": [
+        [
+          "离线"
+        ],
+        [
+          "未部署",
+          "尚未部署"
+        ]
+      ]
+    }
+  ],
+  "tool_results": {
+    "test-failed": "failed",
+    "test-passed": "passed"
+  }
+}

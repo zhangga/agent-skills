@@ -1,0 +1,50 @@
+{
+  "records": [
+    {
+      "item_id": "pool-exhaustion",
+      "at": "cross-blocked",
+      "anchors": [
+        "cross-start",
+        "cross-blocked"
+      ],
+      "title": "修复连接池耗尽",
+      "summary": "已定位连接未归还，但集成测试仍失败，需要继续修复。",
+      "status": "进行中",
+      "claims": [
+        {
+          "claim": "第一天集成测试失败",
+          "level": "observed",
+          "result": "failed",
+          "scope": "集成测试",
+          "citation": {
+            "call_id": "cross-failed",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    },
+    {
+      "item_id": "pool-exhaustion",
+      "at": "cross-final",
+      "anchors": [
+        "cross-resume",
+        "cross-final"
+      ],
+      "title": "修复连接池耗尽",
+      "summary": "继续修复连接归还，12 个集成测试通过，未部署。",
+      "status": "已验证",
+      "claims": [
+        {
+          "claim": "次日修复后 12 个集成测试通过",
+          "level": "observed",
+          "result": "passed",
+          "scope": "集成测试",
+          "citation": {
+            "call_id": "cross-passed",
+            "kind": "tool_result"
+          }
+        }
+      ]
+    }
+  ]
+}

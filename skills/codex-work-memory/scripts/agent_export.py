@@ -5,12 +5,17 @@ snapshot is the recovery point; manifest.json is written after its document pair
 """
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+_presentation_spec = importlib.util.spec_from_file_location('export_presentation', Path(__file__).with_name('presentation.py'))
+presentation = importlib.util.module_from_spec(_presentation_spec)
+_presentation_spec.loader.exec_module(presentation)
 
 
 def instant(value):
@@ -98,7 +103,21 @@ def coverage_summary(window, scans):
         cursor = max(cursor, right)
     if cursor < end:
         gaps.append({"since": cursor.isoformat(), "until": end.isoformat()})
-    return {"complete_local_window": not gaps, "uncovered_intervals": gaps,
+    # A later backfill can discover pending events inside an earlier complete
+    # window. Interval coverage alone must not conceal those unreviewed events.
+    pending, consumed = set(), set()
+    for scan in scans:
+        for tid, checkpoint in scan.get("checkpoints", {}).items():
+            if checkpoint.get("eligible", True) is not False:
+                consumed.update((tid, eid) for eid in checkpoint.get("event_ids", []))
+        for review in scan.get("event_reviews", []):
+            if review["disposition"] == "pending":
+                tid, eid = review["thread_id"], review["event_id"]
+                if start <= instant(scan["source_catalog"][tid]["events"][eid]) < end:
+                    pending.add((tid, eid))
+    pending_count = len(pending - consumed)
+    return {"complete_local_window": not gaps and not pending_count, "uncovered_intervals": gaps,
+            "pending_review_events": pending_count,
             "scope": "实际保存的本地活动及归档会话记录；远程和纯云端来源未覆盖。",
             "note": "扫描次数及文件计数按原运行保留，重叠扫描不可直接相加。没有工作事项不等于没有覆盖缺口。"}
 
@@ -154,6 +173,8 @@ def build_snapshot(run, ledger, basis):
         items = [{"item_id": iid, "latest": history[-1], "history": history[:-1]}
                  for iid, history in sorted(project["items"].items())]
         grouped.append(dict(project, items=items))
+    evidence_ids = {eid for revision in revisions for claim in revision['record'].get('details', {}).get('evidence', []) for eid in claim['evidence_ids']}
+    evidence_catalog = {eid: copy.deepcopy(entry) for scan in scans for eid, entry in scan.get('evidence_catalog', {}).items() if eid in evidence_ids}
     snapshot = {
         "schema_version": 1, "kind": "codex-work-memory-weekly",
         "document_id": "codex-work-memory:weekly:" + run["run_id"],
@@ -166,7 +187,7 @@ def build_snapshot(run, ledger, basis):
         "report_markdown": run.get("report_text", ""), "brief_markdown": run.get("brief_text", ""),
         "counts": {"projects": len(grouped), "items": sum(len(p["items"]) for p in grouped),
                    "revisions": len(revisions), "source_threads": len(referenced)},
-        "projects": grouped, "source_catalog": catalog,
+        "projects": grouped, "source_catalog": catalog, "evidence_catalog": evidence_catalog,
         "coverage": [{"run_id": r["run_id"], "window": r["window"], "coverage": r.get("coverage", {})} for r in scans],
         "coverage_summary": coverage_summary(run["window"], scans),
     }
@@ -197,7 +218,7 @@ def plain(value):
     return str(value).replace("\r", " ").replace("\n", " ").replace("[", "\\[").replace("]", "\\]")
 
 
-def record_markdown(revision, catalog):
+def record_markdown(revision, catalog, evidence_catalog=None):
     record = revision["record"]
     lines = [f"**{plain(record['status'])}** · {record['occurred_at']} · {plain(record['category'])}", "",
              f"进展标识：`{revision['revision_id']}`", "", record["summary"]]
@@ -205,6 +226,8 @@ def record_markdown(revision, catalog):
         if record.get(key):
             lines.extend(["", "**" + label + "**", "", record[key]])
     detail = record.get("details", {})
+    if detail.get('evidence'):
+        lines += ['', '**证据与验证范围**', ''] + ['    ' + line for line in presentation.evidence_text(record, evidence_catalog or {}).splitlines()]
     if detail.get("context"):
         lines.extend(["", "**背景与目标**", "", detail["context"]])
     for key, label in (("approach", "处理过程"), ("decisions", "技术决策"),
@@ -273,15 +296,17 @@ def markdown(snapshot):
         for item in project["items"]:
             latest = item["latest"]
             lines += ["#### " + plain(latest["record"]["title"]), "", "事项标识：`" + item["item_id"] + "`", "",
-                      record_markdown(latest, snapshot["source_catalog"]), ""]
+                      record_markdown(latest, snapshot["source_catalog"], snapshot.get('evidence_catalog', {})), ""]
             for earlier in reversed(item["history"]):
                 lines += ["##### 历史进展 · " + earlier["record"]["occurred_at"], "", "当时标题：" + plain(earlier["record"]["title"]), "",
-                          record_markdown(earlier, snapshot["source_catalog"]), ""]
+                          record_markdown(earlier, snapshot["source_catalog"], snapshot.get('evidence_catalog', {})), ""]
     if not snapshot["projects"]:
         lines += ["本时间窗口没有已保存的工作事项。覆盖情况见下方。", ""]
     coverage = snapshot["coverage_summary"]
     lines += ["## 覆盖范围与缺口", "", coverage["scope"], "", coverage["note"], "",
-              "本地完整扫描已覆盖整个统计窗口。" if coverage["complete_local_window"] else "统计窗口存在未被完整扫描覆盖的时段。", ""]
+              "本地完整扫描已覆盖整个统计窗口。" if coverage["complete_local_window"] else "统计窗口存在采集或审阅缺口。", ""]
+    if coverage.get("pending_review_events"):
+        lines += [f"待处理事件 {coverage['pending_review_events']} 条，尚未消费。", ""]
     for gap in coverage["uncovered_intervals"]:
         lines.append("- 未完整覆盖：" + gap["since"] + " — " + gap["until"])
     lines += ["", "以下保留每次采集的覆盖证据，包括读取数量、错误和排除范围：", "", "````json",

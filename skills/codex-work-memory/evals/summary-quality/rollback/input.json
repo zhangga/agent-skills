@@ -1,0 +1,102 @@
+{
+  "since": "2026-10-16T00:00:00Z",
+  "until": "2026-10-19T00:00:00Z",
+  "threads": [
+    {
+      "thread_id": "rollback",
+      "rows": [
+        {
+          "type": "turn_context",
+          "timestamp": "2026-10-16T01:00:00Z",
+          "payload": {
+            "turn_id": "rollback-turn"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:00:00Z",
+          "payload": {
+            "type": "message",
+            "id": "roll-request",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "试用新方案，若出现回归就撤回。"
+              }
+            ]
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:01:00Z",
+          "payload": {
+            "type": "function_call",
+            "name": "exec_command",
+            "call_id": "deploy",
+            "arguments": "{\"cmd\": \"deploy v2 --environment staging\"}"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:02:00Z",
+          "payload": {
+            "type": "function_call_output",
+            "call_id": "deploy",
+            "output": "staging deployment v2 succeeded; healthcheck OK"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:03:00Z",
+          "payload": {
+            "type": "message",
+            "id": "roll-cancel",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "新方案出现回归，撤回 v2，恢复 v1。"
+              }
+            ]
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:04:00Z",
+          "payload": {
+            "type": "function_call",
+            "name": "exec_command",
+            "call_id": "rollback",
+            "arguments": "{\"cmd\": \"rollback --environment staging --version v1\"}"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:05:00Z",
+          "payload": {
+            "type": "function_call_output",
+            "call_id": "rollback",
+            "output": "Rollback complete: staging now serves v1"
+          }
+        },
+        {
+          "type": "response_item",
+          "timestamp": "2026-10-16T01:06:00Z",
+          "payload": {
+            "type": "message",
+            "id": "roll-final",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "已回滚到 v1，新方案撤回；修复回归问题后再评估。"
+              }
+            ],
+            "phase": "final"
+          }
+        }
+      ]
+    }
+  ]
+}
