@@ -1,0 +1,17 @@
+# Personal configuration and work archives never belong in this repository.
+config.json
+config.local.json
+.env
+.env.*
+!.env.example
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+outputs/
+work/
+archive/
+archives/
+dist/
+.DS_Store

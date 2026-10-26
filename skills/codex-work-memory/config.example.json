@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "archive_dir": "./archive",
+  "agent_export_dir": "./archive/agent",
+  "timezone": "Asia/Shanghai",
+  "codex_home": "~/.codex",
+  "source_roots": ["~/.codex/sessions", "~/.codex/archived_sessions"],
+  "projects": [],
+  "thread_metadata": {},
+  "classification_overrides": {},
+  "excluded_thread_ids": [],
+  "delivery": {
+    "enabled": false,
+    "message_format": "interactive",
+    "codex_link_bridge": {"enabled": false, "port": 48871}
+  }
+}
