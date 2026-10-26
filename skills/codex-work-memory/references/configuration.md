@@ -7,7 +7,7 @@
 | 配置 | 用途 |
 | --- | --- |
 | `archive_dir` | 完整档案根目录；包含 state、runs、报告、索引和投递账本 |
-| `agent_export_dir` | 供个人 Agent 收录的周汇总目录；省略时为 archive_dir 下的 agent |
+| `agent_export_dir` | 日报、补记、周报的完整资料与知识交接包目录；省略时为 archive_dir 下的 agent |
 | `codex_home` / `source_roots` | 本地 Codex 元数据和活动/归档会话日志 |
 | `initial_since` | 首次采集起点，需明确时区；首次也可用 collect 的 --since 指定 |
 | `projects` / `thread_metadata` | 项目和会话元数据，可由 Codex 工具刷新 |
@@ -18,6 +18,10 @@
 路径支持 `~`；相对路径以配置文件所在目录为基准。脚本加载后返回绝对路径，命令中含空格的路径必须加引号。当前展示与周口径仅支持上海时区，不要把 timezone 改成其他值后假定所有视图都已切换。
 
 ## 来源目录与首次采集
+
+采集器同时只读各来源目录父目录下的 `thread_history_1.sqlite`，覆盖已从 JSONL 迁入本机数据库的会话。同一会话仍有 JSONL 时优先读取该文件；迁移后的来源以真实数据库 URI、thread/item 标识及逐会话摘要追溯。SQLite 的整次读取使用一致事务快照，错误或未知表结构仍报告覆盖缺口，不修改应用数据库。`coverage.native_history_sources` 与 `native_*` 计数说明数据库来源，不能只按 files_read 判断总覆盖。
+
+已消费消息另保存 turn/role/正文签名，以适应迁移后用户消息 ID 和时间戳的小幅变化；待审阅事件不写入签名。旧档案在原 JSONL 仍可读时可通过空事件检查点补齐这些签名。默认 48 小时增量回看仍不覆盖更早的历史漏记；全量补记使用明确起点。
 
 默认仍保留 sessions 和 archived_sessions 两个来源路径，每次都重新检查。`<codex_home>/archived_sessions` 从未被扫描到、且元数据中没有应存在而丢失的会话日志时，目录尚未创建不会阻止完整基线推进；coverage.absent_optional_source_roots 会说明此情况。以后目录出现即可自动采集，不用重新初始化。
 
@@ -40,7 +44,7 @@ python -X utf8 "<skill>/scripts/setup.py" show --config "<config>"
 
 ## 更改输出位置
 
-仅更换 Agent 收录目录：编辑个人配置中的 `agent_export_dir`，再运行 `memory.py export --config <config> --run-id <已有周报ID>` 补导出。原目录文件保留；避免把旧、新目录同时当作新的资料重复收录。
+仅更换 Agent 收录目录：编辑个人配置中的 `agent_export_dir`，再运行 `memory.py export --config <config> --run-id <已有运行ID>` 补导出。原目录文件保留；避免把旧、新目录同时当作新的资料重复收录。
 
 迁移完整档案：暂停或等候正在写入的任务结束，复制**整个** archive_dir（包括 state.json、runs、enrichments、item_links、delivery 和报告），核对文件后再更改配置。不要只复制 Markdown；否则会丢失事项关联、去重、采集进度和投递状态。新目录确认可读后再恢复自动化。Skill 不会自动删除旧目录。
 

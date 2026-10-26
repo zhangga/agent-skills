@@ -17,6 +17,12 @@ evidence = memory.evidence
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_device_authorization_redaction_is_idempotent(self):
+        source = 'https://example.test/verify?flow_id=synthetic-flow&user_code=synthetic-code'
+        cleaned = evidence.redact(source)
+        self.assertNotIn('synthetic-', cleaned)
+        self.assertEqual(evidence.redact(cleaned), cleaned)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -138,6 +144,12 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'selected turn'):
             evidence.bind([record], batch, bundle)
 
+    def test_redaction_large_nonsecret_identifiers_complete_without_backtracking(self):
+        # The secret-key matcher must not restart at each byte of a large tool payload.
+        script = "import evidence; text = 'A' * 200000 + ' ' + 'long_identifier_' * 15000; assert evidence.redact(text) == text; assert '[REDACTED]' in evidence.redact(text + ' SERVICE_AUTH=123456789')"
+        subprocess.run([sys.executable, '-c', script], cwd=SCRIPTS,
+                       check=True, timeout=5, capture_output=True)
+
     def test_redaction_excludes_hidden_reasoning_and_marks_truncation(self):
         work = self.root / 'interrupt'
         evaluation.prepare_case(evaluation.DEFAULT_SUITE / 'interrupted-injection', work)
@@ -149,6 +161,28 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(any(e['redacted'] for e in bundle['entries']))
         self.assertNotIn('secret-value', evidence.redact('Authorization: Bearer secret-value'))
         self.assertNotIn('hidden-pass', evidence.redact('password="hidden-pass"'))
+        for secret in ('plat_' + 'synthetic123456789', 'plat\\_' + 'synthetic123456789'):
+            self.assertNotIn(secret, evidence.redact('Historical credential ' + secret))
+        for assignment in ('token：synthetic-value', 'MONGO_ROOT_PASSWORD=synthetic-value',
+                           'SERVICE_API_KEY: synthetic-value'):
+            self.assertNotIn('synthetic-value', evidence.redact(assignment))
+        for secret in ('AIza' + 'synthetic12345678901234567890', 'inf_' + 'synthetic1234567890',
+                       'cred_' + 'synthetic1234567890'):
+            self.assertNotIn(secret, evidence.redact('Historical credential ' + secret))
+        for assignment in ('tech_claw_auth:123456789', 'SERVICE_AUTH=123456789',
+                           'service\\_access\\_token：synthetic-value'):
+            cleaned = evidence.redact(assignment)
+            self.assertNotIn('123456789', cleaned)
+            self.assertNotIn('synthetic-value', cleaned)
+        nested = {'token': 'synthetic-secret-value', 'MONGO_ROOT_PASSWORD': 'synthetic-password'}
+        for _ in range(4):
+            nested = json.dumps(nested)
+            self.assertNotIn('synthetic-secret-value', evidence.redact(nested))
+            self.assertNotIn('synthetic-password', evidence.redact(nested))
+        self.assertEqual(evidence.redact('claw_id:123456789'), 'claw_id:123456789')
+        cleaned = evidence.redact('https://example.test/device?flow_id=synthetic-flow&user_code=123456789')
+        self.assertNotIn('synthetic-flow', cleaned)
+        self.assertNotIn('123456789', cleaned)
         bounded = evidence.extract(self.batch, self.bundle['selection'], limit=1, max_chars=100)
         self.assertEqual(len(bounded['entries']), 1)
         self.assertTrue(bounded['has_more'])

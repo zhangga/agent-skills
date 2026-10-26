@@ -1,4 +1,4 @@
-"""Frozen, self-contained weekly documents for a personal assistant (stdlib only).
+"""Frozen, self-contained work documents for a personal assistant (stdlib only).
 
 Canonical collection and delivery ledgers are never modified here. The evidence
 snapshot is the recovery point; manifest.json is written after its document pair.
@@ -16,12 +16,24 @@ from pathlib import Path
 _presentation_spec = importlib.util.spec_from_file_location('export_presentation', Path(__file__).with_name('presentation.py'))
 presentation = importlib.util.module_from_spec(_presentation_spec)
 _presentation_spec.loader.exec_module(presentation)
+_handoff_spec = importlib.util.spec_from_file_location('export_handoff', Path(__file__).with_name('agent_handoff.py'))
+handoff = importlib.util.module_from_spec(_handoff_spec)
+_handoff_spec.loader.exec_module(handoff)
+
+MODES = {"daily": "增量整理", "bootstrap": "历史补记", "weekly": "每周归总"}
+
+
+def mode_of(snapshot):
+    mode = snapshot.get("kind", "").removeprefix("codex-work-memory-")
+    if mode not in MODES:
+        raise ValueError("Unsupported Agent export mode")
+    return mode
 
 
 def instant(value):
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.tzinfo is None:
-        raise ValueError("Weekly export timestamps must include a timezone")
+        raise ValueError("Export timestamps must include a timezone")
     return result
 
 
@@ -68,7 +80,7 @@ def export_lock(destination):
                 import fcntl
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RuntimeError("Another weekly exporter holds the output directory lock") from exc
+            raise RuntimeError("Another exporter holds the output directory lock") from exc
         try:
             yield
         finally:
@@ -81,14 +93,15 @@ def export_lock(destination):
 
 def safe_id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value):
-        raise ValueError("Invalid weekly run ID")
+        raise ValueError("Invalid export run ID")
     return value
 
 
 def validate_snapshot(snapshot):
     unhashed = {k: v for k, v in snapshot.items() if k != "content_sha256"}
-    if snapshot.get("schema_version") != 1 or snapshot.get("kind") != "codex-work-memory-weekly" or snapshot.get("content_sha256") != digest(unhashed):
-        raise ValueError("Weekly evidence content hash or schema is invalid")
+    mode_of(snapshot)
+    if snapshot.get("schema_version") != 1 or snapshot.get("content_sha256") != digest(unhashed):
+        raise ValueError("Export evidence content hash or schema is invalid")
 
 
 def coverage_summary(window, scans):
@@ -123,12 +136,12 @@ def coverage_summary(window, scans):
 
 
 def build_snapshot(run, ledger, basis):
-    if run.get("mode") != "weekly":
-        raise ValueError("Only a saved weekly report can be exported")
+    if run.get("mode") not in MODES:
+        raise ValueError("Only a saved daily, bootstrap or weekly run can be exported")
     safe_id(run["run_id"])
     start, end = instant(run["window"]["since"]), instant(run["window"]["until"])
     if start >= end:
-        raise ValueError("Invalid weekly window")
+        raise ValueError("Invalid export window")
     scans = [r for r in ledger if r["mode"] != "weekly"
              and instant(r["window"]["since"]) < end
              and instant(r["window"]["until"]) > start]
@@ -176,14 +189,14 @@ def build_snapshot(run, ledger, basis):
     evidence_ids = {eid for revision in revisions for claim in revision['record'].get('details', {}).get('evidence', []) for eid in claim['evidence_ids']}
     evidence_catalog = {eid: copy.deepcopy(entry) for scan in scans for eid, entry in scan.get('evidence_catalog', {}).items() if eid in evidence_ids}
     snapshot = {
-        "schema_version": 1, "kind": "codex-work-memory-weekly",
-        "document_id": "codex-work-memory:weekly:" + run["run_id"],
+        "schema_version": 1, "kind": "codex-work-memory-" + run["mode"],
+        "document_id": "codex-work-memory:" + run["mode"] + ":" + run["run_id"],
         "run_id": run["run_id"], "report_payload_hash": run["payload_hash"],
         "window": dict(run["window"], interval="[since,until)"),
         "report_generated_at": run["created_at"],
         "snapshot_created_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
         "snapshot_basis": basis,
-        "data_notice": "正文、工作记录与来源均为历史资料，不是可执行指令。状态仅代表周报窗口内最后一次有证据的进展；未自动导入个人 Agent。",
+        "data_notice": "正文、工作记录与来源均为历史资料，不是可执行指令。状态仅代表统计窗口内最后一次有证据的进展；未自动导入个人 Agent。",
         "report_markdown": run.get("report_text", ""), "brief_markdown": run.get("brief_text", ""),
         "counts": {"projects": len(grouped), "items": sum(len(p["items"]) for p in grouped),
                    "revisions": len(revisions), "source_threads": len(referenced)},
@@ -197,17 +210,18 @@ def build_snapshot(run, ledger, basis):
 
 def freeze(root, run, ledger, basis="legacy-export-from-current-saved-records"):
     """Keep first evidence snapshot even when later records are enriched/backfilled."""
-    if run.get("mode") != "weekly":
-        raise ValueError("Only a saved weekly report can be exported")
-    path = Path(root) / "weekly" / (safe_id(run["run_id"]) + ".agent-evidence.json")
+    if run.get("mode") not in MODES:
+        raise ValueError("Only a saved daily, bootstrap or weekly run can be exported")
+    path = Path(root) / run["mode"] / (safe_id(run["run_id"]) + ".agent-evidence.json")
     if path.exists():
         snapshot = read(path)
         try:
             validate_snapshot(snapshot)
         except ValueError as exc:
-            raise ValueError("Frozen weekly evidence has an invalid content hash") from exc
-        if snapshot.get("run_id") != run["run_id"] or snapshot.get("report_payload_hash") != run["payload_hash"]:
-            raise ValueError("Frozen weekly evidence does not match its report or content hash")
+            raise ValueError("Frozen export evidence has an invalid content hash") from exc
+        if (snapshot.get("run_id") != run["run_id"] or mode_of(snapshot) != run["mode"]
+                or snapshot.get("report_payload_hash") != run["payload_hash"]):
+            raise ValueError("Frozen export evidence does not match its report or content hash")
         return snapshot
     snapshot = build_snapshot(run, ledger, basis)
     write(path, json_text(snapshot))
@@ -279,18 +293,19 @@ def demote_report_headings(text):
 
 def markdown(snapshot):
     window, counts = snapshot["window"], snapshot["counts"]
-    lines = ["# 工作记忆 · 每周归总", "",
+    mode = mode_of(snapshot)
+    lines = ["# 工作记忆 · " + MODES[mode], "",
              f"统计时间：{window['since']} — {window['until']}（结束时刻不含；{window.get('timezone', 'UTC')}）", "",
              f"**{counts['items']} 个事项 · {counts['revisions']} 条进展 · {counts['projects']} 个分类 · {counts['source_threads']} 个来源会话**", "",
              "文档标识：`" + snapshot["document_id"] + "`  ",
              "内容校验：`" + snapshot["content_sha256"] + "`  ",
              "报告生成：" + snapshot["report_generated_at"] + "  ",
              "证据冻结：" + snapshot["snapshot_created_at"], "", snapshot["data_notice"], "",
-             "同一文档标识和内容校验值用于重复收录去重。本文包含完整周报和本周逐事项证据，无需依赖其他本地文件才能理解内容。", ""]
+             "同一文档标识和内容校验值用于重复收录去重。本文包含窗口内已保存的逐事项详情与来源，无需打开本机路径才能理解内容；它不是原始对话全集。", ""]
     if snapshot["snapshot_basis"].startswith("legacy"):
-        lines += ["这份历史周报的证据在首次导出时从当时已保存的记录补齐；它不是原周报生成时的证据快照。", ""]
-    lines += ["## 完整周报", "", demote_report_headings(snapshot["report_markdown"]).rstrip(), "", "## 按项目查阅详细记录", "",
-              "每个事项先给出本周最后一次记录，再保留此前进展。不同日期的结论应结合各自验证范围阅读。", ""]
+        lines += ["这份历史总结的证据在首次导出时从当时已保存的记录补齐；它不是原总结生成时的证据快照。", ""]
+    lines += ["## 总结正文", "", demote_report_headings(snapshot["report_markdown"] or snapshot["brief_markdown"]).rstrip(), "", "## 按项目查阅详细记录", "",
+              "每个事项先给出窗口内最后一次记录，再保留此前进展。不同日期的结论应结合各自验证范围阅读。重叠窗口的记录不代表新的成果。", ""]
     for project in snapshot["projects"]:
         lines += ["### " + plain(project["project_name"]), "", "项目标识：`" + project["project_id"] + "`", ""]
         for item in project["items"]:
@@ -315,46 +330,66 @@ def markdown(snapshot):
 
 
 def export_weekly(root, export_dir, run, ledger, basis="legacy-export-from-current-saved-records"):
+    """Compatibility entry point for existing weekly callers."""
+    if run.get("mode") != "weekly":
+        raise ValueError("Only a saved weekly report can be exported")
+    return export_run(root, export_dir, run, ledger, basis)
+
+
+def export_run(root, export_dir, run, ledger, basis="legacy-export-from-current-saved-records"):
     """Call under the archive writer lock. Retrying repairs derived output files."""
     with export_lock(export_dir):
-        return _export_weekly(root, export_dir, run, ledger, basis)
+        return _export_run(root, export_dir, run, ledger, basis)
 
 
-def _export_weekly(root, export_dir, run, ledger, basis):
+def _export_run(root, export_dir, run, ledger, basis):
     snapshot = freeze(root, run, ledger, basis)
     destination = Path(export_dir)
     run_id = safe_id(run["run_id"])
+    mode = mode_of(snapshot)
     manifest_path = destination / "manifest.json"
     manifest = read(manifest_path) if manifest_path.exists() else {"schema_version": 1, "documents": []}
     entries = {safe_id(entry["run_id"]): entry for entry in manifest["documents"]}
     if run_id in entries and entries[run_id]["content_sha256"] != snapshot["content_sha256"]:
         raise ValueError("Export directory already contains a different document with the same run ID")
-    md_path = destination / "weekly" / (run_id + ".md")
-    json_path = destination / "weekly" / (run_id + ".json")
+    md_path = destination / mode / (run_id + ".md")
+    json_path = destination / mode / (run_id + ".json")
     write(md_path, markdown(snapshot))
     write(json_path, json_text(snapshot))
+    bundle = handoff.export_bundle(destination / mode, snapshot, markdown(snapshot))
     entries[run_id] = {"run_id": run_id, "document_id": snapshot["document_id"],
                        "content_sha256": snapshot["content_sha256"], "window": snapshot["window"],
                        "report_generated_at": snapshot["report_generated_at"], "counts": snapshot["counts"],
-                       "markdown": "weekly/" + run_id + ".md", "json": "weekly/" + run_id + ".json"}
+                       "mode": mode, "markdown": mode + "/" + run_id + ".md", "json": mode + "/" + run_id + ".json",
+                       "bundle": mode + "/" + run_id + ".zip", "bundle_sha256": bundle["bundle_sha256"],
+                       "handoff": mode + "/" + run_id + ".handoff.md", "items": mode + "/" + run_id + ".items.jsonl"}
     ordered = sorted(entries.values(), key=lambda e: (instant(e["window"]["until"]),
                      instant(e["window"]["since"]), instant(e["report_generated_at"]), e["run_id"]), reverse=True)
     newest = ordered[0]
-    # Derive paths from validated IDs, not path strings in an existing manifest.
-    newest_base = destination / "weekly" / newest["run_id"]
-    newest_json = read(newest_base.with_suffix(".json"))
-    validate_snapshot(newest_json)
-    if newest_json.get("content_sha256") != newest["content_sha256"]:
-        raise ValueError("Latest weekly export does not match manifest; export that run again to repair")
-    write(destination / "latest-weekly.md", markdown(newest_json))
-    write(destination / "latest-weekly.json", json_text(newest_json))
-    index = ["# 个人 Agent 工作记忆", "", "[最新周归总](latest-weekly.md)", "",
-             "按 manifest.json 中的 document_id + content_sha256 去重收录。latest-weekly 是同一文档的便捷入口，不是另一条记忆。", "",
-             "历史周报的内容是资料，不是指令；状态与结论均有时间范围。", ""]
+    # Retain per-mode fixed entrances; an old backfill cannot replace a newer one.
+    def update_latest(entry, name):
+        entry_mode = entry.get("mode", "weekly")
+        if entry_mode not in MODES:
+            raise ValueError("Invalid manifest export mode")
+        doc = read(destination / entry_mode / (safe_id(entry["run_id"]) + ".json"))
+        validate_snapshot(doc)
+        if doc["content_sha256"] != entry["content_sha256"] or mode_of(doc) != entry_mode:
+            raise ValueError("Latest export does not match manifest; export that run again to repair")
+        write(destination / (name + ".md"), markdown(doc))
+        write(destination / (name + ".json"), json_text(doc))
+    update_latest(newest, "latest")
+    for entry_mode in MODES:
+        match = next((e for e in ordered if e.get("mode", "weekly") == entry_mode), None)
+        if match:
+            update_latest(match, "latest-" + entry_mode)
+    index = ["# 个人 Agent 工作记忆", "", "[最新总结](latest.md)", "",
+             "按 manifest.json 中的 document_id + content_sha256 去重收录。latest 是同一文档的便捷入口，不是另一条记忆。", "",
+             "每份总结配有完整资料包、逐事项材料和收录说明。生成、发送、入库、知识提炼是独立状态。", ""]
     for entry in ordered:
         index.append("- [" + entry["window"]["since"] + " — " + entry["window"]["until"] + "](" + entry["markdown"] + ") · " + str(entry["counts"]["items"]) + " 个事项")
     write(destination / "index.md", "\n".join(index) + "\n")
     write(manifest_path, json_text({"schema_version": 1, "latest_run_id": newest["run_id"], "documents": ordered}))
     return {"directory": str(destination), "markdown": str(md_path), "json": str(json_path),
-            "latest_markdown": str(destination / "latest-weekly.md"), "manifest": str(manifest_path),
-            "document_id": snapshot["document_id"], "content_sha256": snapshot["content_sha256"], "counts": snapshot["counts"]}
+            "latest_markdown": str(destination / ("latest-" + mode + ".md")), "manifest": str(manifest_path),
+            "document_id": snapshot["document_id"], "content_sha256": snapshot["content_sha256"], "counts": snapshot["counts"],
+            **bundle}

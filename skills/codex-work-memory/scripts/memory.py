@@ -336,6 +336,9 @@ def rebuild(root, preserve_state=False, preserve_briefs=False):
                 prior = state["sources"].get(tid, {})
                 merged = dict(cp)
                 merged["event_ids"] = sorted(set(prior.get("event_ids", [])) | set(cp.get("event_ids", [])))
+                if 'message_signatures' in prior or 'message_signatures' in cp:
+                    merged['message_signatures'] = sorted(set(prior.get('message_signatures', []))
+                                                          | set(cp.get('message_signatures', [])))
                 times = [x for x in [prior.get("last_event_at"), cp.get("last_event_at")] if x]
                 merged["last_event_at"] = max(times, key=iso) if times else None
                 state["sources"][tid] = merged
@@ -463,6 +466,10 @@ def reviewed_checkpoints(records, batch, reviews):
         ids = [eid for eid in cp.get("event_ids", []) if (tid, eid) in consumed]
         cp["event_ids"] = ids
         cp["last_event_at"] = max((events[tid, eid]["time"] for eid in ids), key=iso, default=None)
+        if 'event_signatures' in cp or 'known_message_signatures' in cp:
+            signatures = cp.pop('event_signatures', {})
+            known_signatures = set(cp.pop('known_message_signatures', []))
+            cp['message_signatures'] = sorted(known_signatures | {signatures[eid] for eid in ids if eid in signatures})
         checkpoints[tid] = cp
     coverage = copy.deepcopy(batch["coverage"])
     pending_count = len(events) - len(consumed)
@@ -575,7 +582,7 @@ def main():
         old = read(path) if existed else None
         if args.command == "export":
             run = read(root / "runs" / (args.run_id + ".json"))
-            result = agent_export.export_weekly(root, cfg["agent_export_dir"], run, resolved_runs(root))
+            result = agent_export.export_run(root, cfg["agent_export_dir"], run, resolved_runs(root))
             print(json.dumps({"ok": True, "run_id": args.run_id, "agent_export": result}, ensure_ascii=False))
             return
         if args.command == "enrich":
@@ -627,16 +634,17 @@ def main():
                         raise ValueError('Use canonical item_id for new progress: ' + canonical)
             run["created_at"] = datetime.now(TZ).isoformat(timespec="microseconds")
             run["schema_version"] = 2 if args.command == "commit" else 1
-            if args.command == "report":
-                # Freeze evidence before the report becomes durable. If a later
-                # export write fails, retrying cannot silently absorb new data.
-                agent_export.freeze(root, run, resolved_runs(root), basis="report-save")
+            # Freeze before making the run durable. Retrying a failed export must
+            # not silently incorporate later backfills or revisions.
+            export_ledger = resolved_runs(root)
+            if args.command == "commit":
+                export_ledger.append(run)
+            agent_export.freeze(root, run, export_ledger, basis=args.command + "-save")
             write_json(path, run)
         state = rebuild(root)
         result = {"ok": True, "already_saved": existed, "run_id": args.run_id, "records": len(run["records"]), "brief": str(root / "briefs" / (args.run_id + ".md")), "index": str(root / "index.md"), "scan_success_until": state["scan_success_until"]}
         result["pending_review_events"] = len(state["pending_reviews"])
-        if args.command == "report":
-            result["agent_export"] = agent_export.export_weekly(root, cfg["agent_export_dir"], run, resolved_runs(root))
+        result["agent_export"] = agent_export.export_run(root, cfg["agent_export_dir"], run, resolved_runs(root))
         print(json.dumps(result, ensure_ascii=False))
 
 if __name__ == "__main__":

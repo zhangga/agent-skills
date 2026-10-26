@@ -82,7 +82,11 @@ class MemoryTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_success_and_same_run_idempotence(self):
-        self.assertFalse(self.assertOk(self.commit())['already_saved'])
+        result = self.assertOk(self.commit())
+        self.assertFalse(result['already_saved'])
+        self.assertTrue(Path(result['agent_export']['bundle']).is_file())
+        self.assertEqual(result['agent_export']['counts']['items'], 1)
+        self.assertEqual(result['agent_export']['ingestion_status'], 'unverified')
         self.assertTrue(self.assertOk(self.commit())['already_saved'])
         self.assertEqual(len(list((self.archive / 'runs').glob('*.json'))), 1)
         self.assertEqual(self.state()['sources']['thread-1']['event_ids'], ['evt_1'])
@@ -203,15 +207,15 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.state()['pending_review_since'], '2026-10-16T01:00:00Z')
 
     def test_legacy_run_with_catalog_retries_without_review_but_cannot_create_new_run(self):
-        self.assertOk(self.commit())
         path = self.archive / 'runs/run-1.json'
-        old = memory.read(path)
-        old.pop('event_reviews')
-        old.pop('batch_checkpoints')
-        old['coverage'] = self.batch['coverage']
-        old['schema_version'] = 1
-        old['payload_hash'] = memory.digest({k: v for k, v in old.items()
-                                             if k not in {'payload_hash', 'created_at', 'schema_version'}})
+        # A real pre-export v1 run has no frozen Agent evidence to mutate.
+        old = {'run_id': 'run-1', 'mode': 'bootstrap', 'window': self.batch['window'],
+               'records': self.records, 'coverage': self.batch['coverage'],
+               'checkpoints': {t['thread_id']: t['checkpoint'] for t in self.batch['threads']},
+               'brief_text': self.brief.read_text(encoding='utf-8'),
+               'source_catalog': memory.source_catalog(self.batch)}
+        old['payload_hash'] = memory.digest(old)
+        old.update(schema_version=1, created_at='2026-10-17T00:00:00Z')
         memory.write_json(path, old)
         before = path.read_bytes()
         self.assertTrue(self.assertOk(self.commit(review=None))['already_saved'])

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 MANAGED_DIRS = {
-    "runs", "daily", "weekly", "briefs", "projects", "delivery", "enrichments",
+    "runs", "daily", "bootstrap", "weekly", "briefs", "projects", "delivery", "enrichments",
     "cards", "verification", "link-bridge", "item_links",
 }
 

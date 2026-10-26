@@ -123,6 +123,11 @@ class ReadabilityTests(unittest.TestCase):
         old['schema_version'] = 1
         payload = {k: v for k, v in old.items() if k not in {'payload_hash', 'created_at', 'schema_version'}}
         old['payload_hash'] = memory.digest(payload)
+        # Put the v1 fixture in a genuine pre-export archive, rather than
+        # overwriting a run that already has an immutable evidence snapshot.
+        self.archive = self.root / 'legacy-archive'
+        memory.write_json(self.cfg, {'archive_dir': str(self.archive)})
+        path = self.archive / 'runs' / 'original.json'
         memory.write_json(path, old)
         before = path.read_bytes()
         result = self.call('commit', '--batch', self.batch_file, '--records', self.records_file,

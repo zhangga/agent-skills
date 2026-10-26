@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
@@ -20,12 +21,17 @@ import re
 import sqlite3
 import stat
 import sys
+from types import SimpleNamespace
 
 UTC = timezone.utc
 
 _config_spec = importlib.util.spec_from_file_location("codex_work_memory_configuration", Path(__file__).with_name("configuration.py"))
 configuration = importlib.util.module_from_spec(_config_spec)
 _config_spec.loader.exec_module(configuration)
+
+_native_spec = importlib.util.spec_from_file_location("codex_work_memory_native_history", Path(__file__).with_name("native_history.py"))
+native_history = importlib.util.module_from_spec(_native_spec)
+_native_spec.loader.exec_module(native_history)
 
 
 def iso(value: datetime) -> str:
@@ -48,6 +54,13 @@ def read_json(path: Path):
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def message_signature(thread_id, item):
+    # The migration changes user IDs and millisecond timestamps, but preserves
+    # turn, role and text. Sign only consumed messages to retain pending work.
+    return digest(json.dumps([thread_id, item.get('turn_id'), item['role'], item['text']],
+                             ensure_ascii=False, separators=(',', ':')))
 
 
 def windows_path(value: str) -> str:
@@ -127,15 +140,17 @@ def load_metadata(roots: list[Path], errors: list[dict]):
         db = base / "state_5.sqlite"
         if db.exists():
             try:
-                with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True) as conn:
+                with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
                     conn.execute("PRAGMA query_only=ON")
                     conn.row_factory = sqlite3.Row
                     available = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
-                    columns = [x for x in ("id", "title", "cwd", "source", "agent_path",
+                    columns = [x for x in ("id", "title", "name", "cwd", "source", "agent_path",
                                "project_id", "archived", "rollout_path", "updated_at") if x in available]
                     if "id" in columns:
                         for row in conn.execute("SELECT " + ",".join(columns) + " FROM threads"):
-                            database[row["id"]] = dict(row)
+                            metadata = dict(row)
+                            metadata['title'] = metadata.get('name') or metadata.get('title')
+                            database[row["id"]] = metadata
             except (OSError, sqlite3.Error) as exc:
                 errors.append({"kind": "metadata_read", "path": str(db), "error": str(exc)})
         source_index = base / "session_index.jsonl"
@@ -254,7 +269,8 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
         "local_top_level_sources", "eligible_events_in_window",
         "already_processed_events", "new_events", "context_events",
         "subagent_threads_skipped", "excluded_threads", "remote_threads_skipped",
-        "threads_with_new_events", "missing_recent_sources", "metadata_threads")})
+        "threads_with_new_events", "missing_recent_sources", "metadata_threads",
+        "native_databases_read", "native_threads_read", "native_items_read")})
     roots = [Path(p).expanduser().resolve() for p in config.get("source_roots", [])]
     if not roots:
         raise ValueError("config.source_roots must name local sessions and archived_sessions directories")
@@ -293,10 +309,51 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
     excluded = set(config.get("excluded_thread_ids", []))
     known_metadata = config.get("thread_metadata", {})
     observed_ids = set()
-    for path in sorted(files.values()):
-        counts["files_enumerated"] += 1
-        meta, events, source_errors, fingerprint = read_rollout(path)
-        counts["files_read"] += int(fingerprint is not None)
+    native_sources = []
+
+    def sources():
+        for path in sorted(files.values()):
+            counts["files_enumerated"] += 1
+            meta, events, source_errors, fingerprint = read_rollout(path)
+            counts["files_read"] += int(fingerprint is not None)
+            yield path, meta, events, source_errors, fingerprint, {}
+        api = SimpleNamespace(**{name: globals()[name] for name in
+                               ('event', 'instant', 'real_user_text', 'message_text')})
+        for base in sorted({root.parent for root in roots}):
+            history = base / 'thread_history_1.sqlite'
+            if not history.exists():
+                continue
+            native_sources.append(str(history))
+            try:
+                with closing(native_history.connect(history)) as conn:
+                    ids = native_history.thread_ids(conn)
+                    counts['native_databases_read'] += 1
+                    for tid in sorted(ids - observed_ids):
+                        metadata = db.get(tid, {})
+                        configured = known_metadata.get(tid, {})
+                        if tid in excluded:
+                            counts['excluded_threads'] += 1
+                            observed_ids.add(tid)
+                            continue
+                        if is_subagent(metadata):
+                            counts['subagent_threads_skipped'] += 1
+                            observed_ids.add(tid)
+                            continue
+                        if configured.get('hostId', 'local') not in (None, 'local'):
+                            counts['remote_threads_skipped'] += 1
+                            observed_ids.add(tid)
+                            continue
+                        events, source_errors, fingerprint, _, item_count = native_history.read_thread(
+                            history, tid, api, conn=conn)
+                        counts['native_threads_read'] += 1
+                        counts['native_items_read'] += item_count
+                        extra = {'source_kind': 'sqlite', 'source_database': str(history),
+                                 'source_thread_id': tid}
+                        yield native_history.locator(history, tid), dict(metadata, id=tid), events, source_errors, fingerprint, extra
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                errors.append({'kind': 'native_history_read', 'path': str(history), 'error': str(exc)})
+
+    for path, meta, events, source_errors, fingerprint, source_extra in sources():
         thread_id = meta.get("id") or meta.get("session_id")
         if not thread_id:
             errors.extend(source_errors)
@@ -322,14 +379,20 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
         counts["local_top_level_sources"] += 1
         old = state.get("sources", {}).get(thread_id, {})
         processed = set(old.get("event_ids", []))
+        old_signatures = set(old.get('message_signatures', []))
+        signatures = {e['event_id']: message_signature(thread_id, e) for e in events}
+        known_signatures = old_signatures | {signatures[e['event_id']] for e in events
+                                            if e['event_id'] in processed}
         in_window = [e for e in events if since <= instant(e["time"]) < until]
         counts["eligible_events_in_window"] += len(in_window)
-        new = [e for e in in_window if e["event_id"] not in processed]
+        new = [e for e in in_window if e["event_id"] not in processed
+               and signatures[e['event_id']] not in old_signatures]
         counts["already_processed_events"] += len(in_window) - len(new)
-        if not new:
+        if not new and known_signatures == old_signatures:
             continue
         # Only the last two prior events, capped at 12k characters, supply context.
-        before = [e for e in events if instant(e["time"]) < instant(new[0]["time"])][-2:]
+        before = ([e for e in events if instant(e["time"]) < instant(new[0]["time"])][-2:]
+                  if new else [])
         context = []
         remaining = 12000
         for previous in reversed(before):
@@ -345,15 +408,18 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
         project_id, project_name, basis = classify(configured, db_meta, cwd, config.get("projects", []),
                                                   config.get("classification_overrides", {}).get(thread_id))
         title = configured.get("title") or index.get(thread_id) or db_meta.get("title") or thread_id
-        archived = "archived_sessions" in path.parts or bool(db_meta.get("archived"))
+        archived = "archived_sessions" in str(path).replace('\\', '/').split('/') or bool(db_meta.get("archived"))
         threads.append({"thread_id": thread_id, "title": title,
                         "project_id": project_id, "project_name": project_name,
                         "classification_basis": basis, "cwd": cwd, "source_path": str(path),
-                        "archived": archived, "host_id": "local", "events": context + new,
+                        "archived": archived, "host_id": "local", "events": context + new, **source_extra,
                         "checkpoint": {"eligible": not source_errors,
                                        "event_ids": [e["event_id"] for e in new],
-                                       "last_event_at": iso(max(instant(e["time"]) for e in new)),
-                                       "source_path": str(path), "source_fingerprint": fingerprint}})
+                                       "last_event_at": max((e['time'] for e in new), key=instant, default=None),
+                                       "source_path": str(path), "source_fingerprint": fingerprint,
+                                       'known_message_signatures': sorted(known_signatures),
+                                       'event_signatures': {e['event_id']: signatures[e['event_id']] for e in new},
+                                       **source_extra}})
         counts["new_events"] += len(new)
         counts["context_events"] += len(context)
     missing = []
@@ -373,14 +439,15 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
                     "title": configured.get("title") or index.get(thread_id) or metadata.get("title")}
             errors.append(item)
             missing.append(thread_id)
-    counts["threads_with_new_events"] = len(threads)
+    counts["threads_with_new_events"] = sum(bool(t['checkpoint']['event_ids']) for t in threads)
     counts["missing_recent_sources"] = len(missing)
     counts["metadata_threads"] = len(db)
     remote = [k for k, v in known_metadata.items() if v.get("hostId", "local") not in (None, "local")]
     return {"schema_version": 1, "window": {"since": iso(since), "until": iso(until),
             "timezone": config.get("timezone", "Asia/Shanghai"), "interval": "[since,until)"},
-            "coverage": {"complete_local": not errors, "source_scope": "local active + archived sessions",
+            "coverage": {"complete_local": not errors, "source_scope": "local active + archived sessions + native SQLite history",
                          "source_roots": [str(p) for p in roots], "errors": errors,
+                         "native_history_sources": native_sources,
                          "source_roots_present": present_roots,
                          "absent_optional_source_roots": absent_optional_roots,
                          "counts": dict(counts), "known_remote_thread_ids_excluded": remote,
@@ -388,7 +455,9 @@ def collect(config: dict, state: dict, since: datetime, until: datetime) -> dict
                                          "Only saved user messages and final/completion responses are collected; tools and reasoning are excluded.",
                                          "Deleted local rollouts cannot be reconstructed; recent missing metadata sources are reported.",
                                          "Default incremental scans revisit 48 hours; older timestamped edits or newly discovered history require an explicit --since backfill.",
-                                         "All source files are enumerated regardless of creation-directory date."]},
+                                         "All source files are enumerated regardless of creation-directory date.",
+                                         "Existing JSONL sources take precedence over migrated SQLite history for the same thread.",
+                                         "Native SQLite source fingerprints cover that thread's persisted turns and items in one read transaction."]},
             "threads": sorted(threads, key=lambda t: (t["project_name"] or "", t["title"]))}
 
 
@@ -427,6 +496,8 @@ def main() -> int:
     protected = {args.config.resolve()}
     if args.state:
         protected.add(args.state.resolve())
+    protected.update((Path(p).expanduser().resolve().parent / 'thread_history_1.sqlite')
+                     for p in config.get('source_roots', []))
     if out in protected or any(out.is_relative_to(Path(p).expanduser().resolve()) for p in config.get("source_roots", [])):
         parser.error("--out must not overwrite config/state or write into source roots")
     result = collect(config, state, since, until)

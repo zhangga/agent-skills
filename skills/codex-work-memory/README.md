@@ -2,7 +2,7 @@
 
 [返回 Skills 合集](https://github.com/zhangga/agent-skills) · [skills.sh](https://skills.sh/zhangga/agent-skills/codex-work-memory) · [Agent 工作流程](SKILL.md)
 
-按项目整理 Codex 本地会话，把工作成果、问题解决过程、技术决策和可复用知识保存成带时间、可追溯的档案。既能给人阅读，也能把完整周汇总交给个人 Agent 收录。
+按项目整理 Codex 本地会话，把工作成果、问题解决过程、技术决策和可复用知识保存成带时间、可追溯的档案。既能给人阅读，也能把完整资料交给个人 Agent 收录和提炼知识。
 
 ## 安装与依赖
 
@@ -18,7 +18,7 @@ npx skills add zhangga/agent-skills --skill codex-work-memory -a codex -g
 
 在 Codex 中说：
 
-> 使用 $codex-work-memory 初始化，完整档案保存在 D:/My Memory/archive，个人 Agent 的周汇总保存在 D:/My Agent/inbox/codex。先整理最近 7 天，不发送消息。
+> 使用 $codex-work-memory 初始化，完整档案保存在 D:/My Memory/archive，个人 Agent 的资料包保存在 D:/My Agent/inbox/codex。先整理最近 7 天，不发送消息。
 
 也可以先运行初始化命令，再让 Codex 整理会话。下面的 `<skill>` 需替换成实际安装目录：
 
@@ -29,7 +29,7 @@ python -X utf8 "<skill>/scripts/setup.py" init --archive-dir "D:/My Memory/archi
 | 配置 | 保存内容 | 默认行为 |
 | --- | --- | --- |
 | `archive_dir` | 完整档案、索引、采集进度、投递账本 | 未指定时使用个人配置旁的 `archive/` |
-| `agent_export_dir` | 每周供个人 Agent 收录的完整汇总 | 未指定时使用 `<archive_dir>/agent` |
+| `agent_export_dir` | 每次总结的完整资料、逐事项材料和知识交接包 | 未指定时使用 `<archive_dir>/agent` |
 
 个人配置默认保存在 `~/.codex/codex-work-memory/config.json`，设置 `CODEX_HOME` 时跟随该目录。支持显式 `--config` 和 `CODEX_WORK_MEMORY_CONFIG`，也兼容旧版 Skill 内的 `config.json`。初始化不会覆盖已有配置。
 
@@ -71,29 +71,29 @@ python -X utf8 "<skill>/scripts/setup.py" init --archive-dir "D:/My Memory/archi
 | `<archive_dir>/item_links/` | 可追溯的事项关联与撤销记录，重建时归并跨天历史 |
 | `<archive_dir>/state.json` | 采集时间基线与已处理标记 |
 | `<archive_dir>/delivery/` | 已启用推送时的发送快照与真实结果 |
-| `<agent_export_dir>/weekly/` | 每周一份可独立收录的完整 Markdown 和 JSON |
-| `<agent_export_dir>/latest-weekly.md` | 固定的最新周汇总阅读入口，配有同名 JSON |
-| `<agent_export_dir>/manifest.json` | 周汇总清单及内容摘要，方便增量同步与去重 |
+| `<agent_export_dir>/daily/`、`bootstrap/`、`weekly/` | 完整 Markdown / JSON、逐事项 JSONL、交接说明和 ZIP 资料包 |
+| `<agent_export_dir>/latest.md` | 最新窗口的完整资料，保留 latest-weekly 等分模式入口 |
+| `<agent_export_dir>/manifest.json` | 各模式资料清单及内容摘要，方便增量同步与去重 |
 
 `runs/` 中的是提炼后的工作记录，原始会话 JSONL 仍在 Codex 的来源目录。详细档案保留必要来源信息，不复制全部对话和工具输出。
 
 ## 交给个人 Agent 收录
 
-单次交接，直接让助理读取 `latest-weekly.md`。它包含完整周报，以及按项目归并的事项详情、处理步骤、决策、验证、知识、待办和来源，复制一个文件也能理解内容。
+单次交接，把本次 `<mode>/<run-id>.handoff.md` 与完整 `.md`/`.json` 交给助理，或使用同名 ZIP 资料包。正文包含按项目归并的事项详情、历史、决策、验证、知识候选、待办和来源；逐事项 `.items.jsonl` 方便分批读取。日报、历史补记和周报都会自动生成。
 
-长期同步，让助理先读 `manifest.json`，按 `document_id` 与 `content_sha256` 判断新增资料，再读取对应 `.json` 或 `.md`。`latest-weekly` 是已有周文件的完整副本，不应再算一条独立记忆。
+长期同步，让助理先读 `manifest.json`，按 `document_id` 与 `content_sha256` 判断新增资料，再读取对应 `.json` 或 `.md`。`latest` 和各模式最新入口都是已有文件的完整副本，不应再算一条独立记忆。跨日报、周报按事项和进展 ID/内容摘要去重。
 
-已有周报可以补导出：
+已有日报、补记或周报可以补导出：
 
 ```bash
-python -X utf8 "<skill>/scripts/memory.py" export --config "<个人配置文件>" --run-id <已保存的周报ID>
+python -X utf8 "<skill>/scripts/memory.py" export --config "<个人配置文件>" --run-id <已保存的运行ID>
 ```
 
-这不会重新采集或发送消息。正常重试使用已冻结的证据，旧周补导出不会替换较新一周的固定入口。具体字段、版本和去重约定见 [Agent 收录协议](references/agent-export.md)。导出表示文件已准备好，实际入库由个人 Agent 完成。
+这不会重新采集或发送消息。正常重试使用已冻结的证据，旧历史补导出不会倒退最新入口，也不会改变采集时间基线。具体字段、版本和去重约定见 [Agent 收录协议](references/agent-export.md)。导出表示资料已准备好。交接说明要求助理提炼可复用结论并保留适用边界与来源，实际入库后返回来源 ID、保存/重复/失败数量及知识页，并回读核对。资料生成、发送、入库和知识提炼分别报告；飞书卡片标题或“任务已完成”不能证明入库。
 
 ## 自动日报、周报与飞书
 
-安装后，可让 Codex 按指定时间配置 daily / weekly 自动化，并引用你的个人配置绝对路径。weekly 流程会自动生成 Agent 完整周汇总；补齐采集时不另外发送一份日报。
+安装后，可让 Codex 按指定时间配置 daily / weekly 自动化，并引用你的个人配置绝对路径。daily / bootstrap / weekly 保存后都会自动生成 Agent 完整资料包；周报补齐采集时不另外发送一份日报。
 
 需要推送时，再配置自己的机器人及接收人并授权发送。卡片提供项目概览、重点成果、后续事项和可用的来源按钮，详细内容继续保存在档案中。未知发送结果先核对，避免重试造成重复消息；发送失败不会回退已保存的工作进度。详见[飞书卡片说明](references/cards.md)。
 
@@ -112,7 +112,7 @@ python -X utf8 "<skill>/scripts/memory.py" export --config "<个人配置文件>
 - [配置与目录迁移](references/configuration.md)
 - [工作记录格式](references/records.md)
 - [提炼与阅读规范](references/writing.md)
-- [每周 Agent 收录协议](references/agent-export.md)
+- [Agent 知识交接协议](references/agent-export.md)
 - [可选飞书卡片](references/cards.md)
 
 ## License

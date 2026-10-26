@@ -2,9 +2,11 @@
 import copy
 import importlib.util
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -198,7 +200,7 @@ class AgentExportTests(unittest.TestCase):
         data = export.read(path)
         data["report_markdown"] = "changed"
         export.write(path, export.json_text(data))
-        with self.assertRaisesRegex(ValueError, "Frozen weekly evidence"):
+        with self.assertRaisesRegex(ValueError, "Frozen export evidence"):
             export.export_weekly(self.root, self.destination, run, [scan()])
         with self.assertRaises(ValueError):
             export.export_weekly(self.root, self.destination, weekly("../unsafe"), [])
@@ -236,6 +238,94 @@ class AgentExportTests(unittest.TestCase):
             memory.main()
         self.assertEqual((self.root / "state.json").read_bytes(), state_bytes)
         self.assertTrue(export.read(self.destination / "weekly" / "weekly-legacy.json")["snapshot_basis"].startswith("legacy"))
+
+    def test_bootstrap_bundle_is_portable_complete_and_deterministic(self):
+        run = scan("bootstrap-full", records=[record(), record(at="2026-01-09T10:00:00+08:00")])
+        run["mode"] = "bootstrap"
+        result = export.export_run(self.root, self.destination, run, [run])
+        original = Path(result["bundle"]).read_bytes()
+        with zipfile.ZipFile(result["bundle"]) as bundle:
+            self.assertEqual(set(bundle.namelist()), {"HANDOFF.md", "source.md", "source.json", "items.jsonl", "manifest.json"})
+            inventory = json.loads(bundle.read("manifest.json"))
+            for name, expected in inventory["files"].items():
+                actual = bundle.read(name)
+                self.assertEqual(len(actual), expected["bytes"])
+                self.assertEqual(hashlib.sha256(actual).hexdigest(), expected["sha256"])
+            doc = json.loads(bundle.read("source.json"))
+            units = [json.loads(line) for line in bundle.read("items.jsonl").splitlines()]
+            self.assertEqual(len(units), doc["counts"]["items"])
+            self.assertEqual(sum(1 + len(u["history"]) for u in units), 2)
+            self.assertEqual(units[0]["latest"]["record"]["details"], run["records"][-1]["details"])
+            self.assertEqual(units[0]["source_catalog"]["demo-thread"]["events"], {"demo-event": "2026-01-05T00:00:00+08:00"})
+            self.assertEqual(units[0]["extraction_status"], "candidate")
+        self.assertEqual(result["ingestion_status"], "unverified")
+        # Later changes to the ledger do not change a previously frozen package.
+        again = export.export_run(self.root, self.destination, run, [scan(records=[])])
+        self.assertEqual(original, Path(again["bundle"]).read_bytes())
+
+    def test_overlapping_modes_share_revision_and_item_identity(self):
+        daily = scan()
+        week = export.build_snapshot(weekly(), [daily], "report-save")
+        day = export.build_snapshot(daily, [daily], "commit-save")
+        day_unit = next(export.handoff.item_units(day))
+        week_unit = next(export.handoff.item_units(week))
+        self.assertNotEqual(day_unit["document_id"], week_unit["document_id"])
+        for key in ("unit_id", "content_sha256", "revision_hashes"):
+            self.assertEqual(day_unit[key], week_unit[key])
+        changed = copy.deepcopy(day)
+        changed["projects"][0]["items"][0]["latest"]["record"]["knowledge"] = "修订后的条件"
+        updated = next(export.handoff.item_units(changed))
+        self.assertEqual(updated["unit_id"], day_unit["unit_id"])
+        self.assertNotEqual(updated["revision_hashes"], day_unit["revision_hashes"])
+
+    def test_item_material_preserves_claim_level_evidence_and_missing_ids(self):
+        run = scan()
+        run["records"][0]["details"]["evidence"] = [{"claim": "一条请求成功", "level": "tool",
+                                                      "evidence_ids": ["e1", "missing"]}]
+        run["evidence_catalog"] = {"e1": {"excerpt": "响应正常", "kind": "tool_result"},
+                                   "unused": {"excerpt": "不相关记录"}}
+        doc = export.build_snapshot(run, [run], "commit-save")
+        unit = next(export.handoff.item_units(doc))
+        self.assertEqual(unit["evidence_catalog"], {"e1": run["evidence_catalog"]["e1"]})
+        self.assertEqual(unit["missing_evidence_ids"], ["missing"])
+        self.assertEqual(unit["latest"]["record"]["details"]["evidence"], run["records"][0]["details"]["evidence"])
+
+    def test_mixed_manifest_keeps_weekly_entrance_and_newest_cutoff(self):
+        export.export_weekly(self.root, self.destination, weekly(), [scan()])
+        daily = scan("daily-newer")
+        daily["window"]["until"] = "2026-01-13T00:00:00+08:00"
+        export.export_run(self.root, self.destination, daily, [daily])
+        older = scan("bootstrap-older")
+        older["mode"] = "bootstrap"
+        export.export_run(self.root, self.destination, older, [older])
+        self.assertEqual(export.read(self.destination / "latest-weekly.json")["run_id"], "weekly-demo")
+        self.assertEqual(export.read(self.destination / "latest.json")["run_id"], "daily-newer")
+        self.assertEqual(export.read(self.destination / "latest-bootstrap.json")["run_id"], "bootstrap-older")
+
+    def test_commit_export_failure_keeps_committed_state_and_repairs_without_recollecting(self):
+        config = Path(self.temp.name) / "config.json"
+        memory.write_json(config, {"archive_dir": str(self.root), "agent_export_dir": str(self.destination)})
+        batch = {"window": scan()["window"], "coverage": {"complete_local": True}, "threads": []}
+        batch_file, record_file, review_file, brief = [Path(self.temp.name) / p for p in ("batch.json", "records.json", "review.json", "brief.md")]
+        for path, data in ((batch_file, batch), (record_file, []), (review_file, [])):
+            memory.write_json(path, data)
+        memory.write(brief, "本次无新增记录")
+        args = ["memory.py", "commit", "--config", str(config), "--run-id", "daily-empty", "--mode", "daily",
+                "--batch", str(batch_file), "--records", str(record_file), "--review", str(review_file), "--brief", str(brief)]
+        with patch.object(sys, "argv", args), patch.object(memory.agent_export, "export_run", side_effect=OSError("export failed")):
+            with self.assertRaises(OSError):
+                memory.main()
+        state = (self.root / "state.json").read_bytes()
+        saved = export.read(self.root / "runs" / "daily-empty.json")
+        frozen = export.read(self.root / "daily" / "daily-empty.agent-evidence.json")
+        self.assertEqual(frozen["snapshot_basis"], "commit-save")
+        with patch.object(sys, "argv", ["memory.py", "export", "--config", str(config), "--run-id", "daily-empty"]), redirect_stdout(StringIO()) as output:
+            memory.main()
+        result = json.loads(output.getvalue())["agent_export"]
+        self.assertEqual((self.root / "state.json").read_bytes(), state)
+        self.assertEqual(export.read(self.root / "runs" / "daily-empty.json"), saved)
+        self.assertEqual(result["content_sha256"], frozen["content_sha256"])
+        self.assertTrue(Path(result["bundle"]).is_file())
 
 
 if __name__ == "__main__":

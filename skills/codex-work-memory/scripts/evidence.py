@@ -22,10 +22,11 @@ def digest(value):
 def redact(text):
     text = re.sub(r'-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----',
                   '[REDACTED PRIVATE KEY]', text, flags=re.S)
-    text = re.sub(r'\b(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]{12,}', '[REDACTED]', text)
+    text = re.sub(r'\b(?:(?:sk-|ghp_|github_pat_|plat\\?_|inf_|cred_)[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,})', '[REDACTED]', text)
     text = re.sub(r'(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+', r'\1[REDACTED]', text)
-    text = re.sub(r'(?i)([\"\x27]?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|验证码)[\"\x27]?\s*[:=]\s*)[\"\x27]?[^\s,;\"\x27}]+[\"\x27]?',
+    text = re.sub(r'(?i)(?<![A-Za-z0-9_\\-])((?:\\*[\"\x27])?(?:[a-z][a-z0-9]*(?:\\?_|-))*(?:api(?:\\?_|-)?key|access(?:\\?_|-)?token|refresh(?:\\?_|-)?token|token|password|passwd|secret|auth|验证码)(?:\\*[\"\x27])?\s*[:=：]\s*)(?:\\*[\"\x27])?[^\s,;\"\x27}]+(?:\\*[\"\x27])?',
                   r'\1[REDACTED]', text)
+    text = re.sub(r'(?i)([?&](?:flow_id|user_code|device_code)=)(?!\[REDACTED\])[^&#\s)>\]]+', r'\1[REDACTED]', text)
     text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED JWT]', text)
     return text
 
@@ -36,6 +37,67 @@ def text_content(value):
     if isinstance(value, list):
         return '\n'.join(part.get('text', '') for part in value if isinstance(part, dict) and part.get('type') in {'text', 'output_text', 'input_text'})
     return json.dumps(value, ensure_ascii=False) if value is not None else ''
+
+
+def native_entries(thread, anchor_ids, start, end, max_chars, text_offset):
+    tid = thread['thread_id']
+    path = Path(thread['source_database'])
+    events, errors, fingerprint, items, _ = collector.native_history.read_thread(
+        path, tid, collector, include_items=True)
+    if errors or fingerprint != thread['checkpoint'].get('source_fingerprint'):
+        raise ValueError('Native history changed since collection; re-collect before extracting evidence')
+    actual = {e['event_id']: e for e in events}
+    if not set(anchor_ids) <= actual.keys():
+        raise ValueError('Anchor no longer exists in native history')
+    anchors = [actual[eid] for eid in anchor_ids]
+    entries = []
+    for raw, item in items:
+        relevant = [e['event_id'] for e in anchors if e.get('turn_id') == raw['turn_id']]
+        if not relevant:
+            continue
+        kind = item.get('type')
+        chunks = []
+        started = raw.get('started_at_ms') or raw['created_at_ms']
+        completed = raw.get('completed_at_ms') or raw['created_at_ms']
+        tool_name = ''
+        if kind == 'userMessage':
+            chunks = [('user_message', collector.real_user_text(collector.message_text(item)), started)]
+        elif kind == 'agentMessage' and item.get('phase') not in {'analysis', 'reasoning'}:
+            chunks = [('assistant_message', item.get('text', ''), completed)]
+        elif kind == 'commandExecution':
+            tool_name = 'commandExecution'
+            chunks = [('tool_call', item.get('command', ''), started)]
+            if item.get('aggregatedOutput') is not None or item.get('exitCode') is not None:
+                chunks.append(('tool_result', text_content({'status': item.get('status'),
+                    'exitCode': item.get('exitCode'), 'output': item.get('aggregatedOutput')}), completed))
+        elif kind in {'mcpToolCall', 'dynamicToolCall'}:
+            tool_name = '.'.join(str(item.get(k) or '') for k in ('server', 'tool')).strip('.') or kind
+            chunks = [('tool_call', text_content(item.get('arguments')), started)]
+            result = item.get('result') if kind == 'mcpToolCall' else item.get('contentItems')
+            if result is not None or item.get('error') is not None:
+                chunks.append(('tool_result', text_content({'status': item.get('status'),
+                    'result': result, 'error': item.get('error')}), completed))
+        elif kind == 'fileChange':
+            tool_name = 'fileChange'
+            chunks = [('tool_result', text_content(item), completed)]
+        for evidence_kind, content, millis in chunks:
+            stamp = collector.instant(millis)
+            if not content or stamp >= end:
+                continue
+            cleaned = redact(content)
+            entries.append({'evidence_id': 'evd_' + digest([tid, raw['turn_id'], raw['item_id'], evidence_kind, item]),
+                'thread_id': tid, 'turn_id': raw['turn_id'], 'time': collector.iso(stamp),
+                'kind': evidence_kind, 'source_path': thread['source_path'],
+                'source_line': raw['rollout_ordinal'], 'source_ordinal': raw['rollout_ordinal'],
+                'source_kind': 'sqlite', 'source_item_id': raw['item_id'],
+                'source_sha256': fingerprint, 'time_basis': 'completed_at_ms' if raw.get('completed_at_ms') and evidence_kind != 'tool_call' else 'item_created_or_started_at_ms',
+                'anchor_event_ids': sorted(relevant), 'context_only': stamp < start,
+                'excerpt': cleaned[text_offset:text_offset + max_chars], 'redacted': cleaned != content,
+                'text_offset': text_offset, 'text_length': len(cleaned),
+                'truncated': text_offset > 0 or len(cleaned) > max_chars,
+                'call_id': raw['item_id'] if evidence_kind in {'tool_call', 'tool_result'} else None,
+                'tool_name': tool_name})
+    return entries
 
 
 def extract(batch, selections, *, limit=30, offset=0, max_chars=2000, text_offset=0):
@@ -53,6 +115,9 @@ def extract(batch, selections, *, limit=30, offset=0, max_chars=2000, text_offse
         allowed = {e['event_id']: e for e in thread['events'] if not e.get('context_only')}
         if not anchor_ids or not set(anchor_ids) <= allowed.keys():
             raise ValueError('Evidence anchors must be new events in the selected batch thread')
+        if thread.get('source_kind') == 'sqlite':
+            entries.extend(native_entries(thread, anchor_ids, start, end, max_chars, text_offset))
+            continue
         path = Path(thread['source_path'])
         raw = path.read_bytes()
         fingerprint = hashlib.sha256(raw).hexdigest()
@@ -208,7 +273,7 @@ def main():
     args = ap.parse_args()
     batch = collector.read_json(args.batch)
     output = args.out.resolve()
-    if output == args.batch.resolve() or (args.selection and output == args.selection.resolve()) or any(output.is_relative_to(Path(p).resolve()) for p in batch.get('coverage', {}).get('source_roots', [])):
+    if output == args.batch.resolve() or (args.selection and output == args.selection.resolve()) or any(output.is_relative_to(Path(p).resolve()) for p in batch.get('coverage', {}).get('source_roots', [])) or any(output == Path(p).resolve() for p in batch.get('coverage', {}).get('native_history_sources', [])):
         ap.error('--out must not overwrite the batch or source logs')
     if args.selection and (args.thread_id or args.event_id):
         ap.error('Use either --selection or --thread-id with --event-id')
